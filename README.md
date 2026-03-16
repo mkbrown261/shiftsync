@@ -1,140 +1,118 @@
-# Connect Differently — Employee Time Tracking System
+# ShiftSync — Code Differently Time & Attendance
 
-## Project Overview
-- **Product Name**: Connect Differently (ShiftSync)
-- **Client**: Code Differently (replaces Connecteam — saves $1,000/month)
-- **Goal**: Web-based attendance & time tracking for students/employees with QuickBooks payroll integration
-- **Tech Stack**: Hono + TypeScript + Cloudflare Pages + TailwindCSS (CDN) + Chart.js
+> Replacing Connecteam ($1,000/month) with a custom, intelligent, location-verified attendance system.
 
----
+## 🌐 Live URLs
+- **Production (Cloudflare Pages):** https://shiftsync.pages.dev
+- **Latest Deploy:** https://7adb599c.shiftsync.pages.dev
 
-## 🖥️ Live Demo URLs
+## 🎯 Project Overview
+- **Name:** ShiftSync / ConnectDifferently
+- **Client:** Code Differently school
+- **Admin:** Cristina
+- **Goal:** Track student/employee attendance, verify location on clock-in, automate stipend eligibility, and sync payroll to QuickBooks via AI
 
-| Page | URL | Description |
-|------|-----|-------------|
-| Login | `/` | Role-based login (Student / Instructor / Admin) |
-| Student Clock-In | `/student` | Clock in/out with GPS, history, profile |
-| Instructor Verification | `/instructor` | Mark attendance, QB confirm per student |
-| Admin Dashboard | `/admin` | Full KPI dashboard, all management screens |
-| Student Profile | `/student-profile` | Detailed per-student stats & QB sync |
+## 👥 User Roles & Pages
 
----
+| Route | Role | Description |
+|-------|------|-------------|
+| `/login` | All | Role-based login (Student / Instructor / Admin) |
+| `/student` | Student | Clock In/Out with GPS verification + proximity map |
+| `/instructor` | Instructor | Attendance roster, Present/Late/Absent dropdown, QB sync |
+| `/admin` | Admin | Dashboard KPIs, charts, alert management |
+| `/profile` | Student | Hours, lates, absences, stipend eligibility meter |
+| `/reports` | Admin/Instructor | Attendance reports, CSV/Google Sheets/QuickBooks export |
+| `/settings` | Admin | Late thresholds, stipend rules, email alerts, QB config |
+| `/geofence` | Admin | Geofence radius config, Leaflet map pin-drop, audit log |
 
-## 👥 User Roles & Screens
+## 🗺️ Intelligent Location System
 
-### 🎓 Student (`/student`)
-- **Clock In / Clock Out** — animated fingerprint button with real-time timer
-- **GPS Verification** — location captured on clock-in, verified against campus coordinates
-- **Attendance History** — date-range list with Present/Late/Absent badges
-- **Profile Tab** — hours trend chart, attendance rate, stipend status
+### Student Clock-In Flow
+1. **GPS Watch** — `watchPosition` continuously tracks student, shows live distance from campus
+2. **Proximity Banner** — green "INSIDE ZONE" or orange "OUTSIDE ZONE" with distance bar
+3. **Canvas Map** — real-time mini-map drawing campus pin, student pin, geofence ring (no external lib)
+4. **Verification Panel** — 4-step check on clock-in: GPS → Distance → GPS Accuracy → WiFi
+5. **Result routing:**
+   - ✅ Inside fence → normal clock-in
+   - ⚠️ Outside fence → flagged clock-in (instructor notified)
+   - ❓ No GPS → manual review clock-in
 
-### 🏫 Instructor (`/instructor`)
-- **Live Roster** — all students with clock-in times displayed
-- **Status Dropdown** — mark Present / Late / Absent per student
-- **Mark All Present** — bulk action button
-- **QB Confirm Button** — per-student QuickBooks confirmation
-- **Send All to QB** — batch QuickBooks push
+### Admin Geofence Config (`/geofence`)
+- Leaflet interactive map — click to move campus pin
+- Radius slider 20–200m (presets: Tight 40m / Standard 60m / Wide 100m)
+- Max GPS accuracy threshold (10–100m)
+- Authorized WiFi network list
+- **Verification Audit Log** — full/partial/failed stats + filterable table
 
-### 🛡️ Admin (`/admin`) — Tabbed Dashboard
-- **Dashboard** — KPIs (students, hours, lates, stipend), charts, alerts
-- **Students** — full roster with standing indicators
-- **Reports** — date-range filtering, CSV + Google Sheets export
-- **Stipend** — eligibility breakdown with attendance rate bars
-- **QuickBooks** — AI sync assistant, pending entries review, confirm/skip
-- **Settings** — late threshold slider, email alerts, GPS radius, integrations
+### Location API Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/location/verify` | POST | Verify student coordinates against geofence |
+| `/api/location/config` | GET | Fetch current geofence settings |
+| `/api/location/config` | POST | Admin: update geofence settings |
+| `/api/location/verifications` | GET | Fetch audit log |
+| `/api/location/distance` | GET | Calculate distance from campus |
 
----
+## ⚡ QuickBooks + AI Integration
 
-## 🎨 Brand Colors (Code Differently)
-| Token | Hex | Usage |
-|-------|-----|-------|
-| Navy | `#1E1B2E` | Background |
-| Navy Light | `#2A263D` | Cards |
-| Orange | `#F4703A` | Gradient start |
-| Pink | `#E040A0` | Gradient mid |
-| Purple | `#9B3DE8` | Gradient end, primary accent |
+### AI API Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/ai/review-payroll` | POST | AI reviews attendance + generates QB entries |
+| `/api/ai/generate-qb-entry` | POST | Generate single QB time activity entry |
+| `/api/ai/stipend-check` | POST | AI checks student stipend eligibility |
+| `/api/ai/test-key` | POST | Validate OpenAI-compatible API key |
+| `/api/ai/run-with-key` | POST | Run full AI payroll review with user-supplied key |
 
----
+### QuickBooks API Endpoints
+| Endpoint | Method | Description |
+|----------|--------|-------------|
+| `/api/qb/auth/connect` | GET | OAuth2 connect URL for QuickBooks |
+| `/api/qb/employees` | GET | Fetch employee list with QB IDs |
+| `/api/qb/payroll/sync` | POST | Push payroll entries to QuickBooks |
 
-## 🔌 QuickBooks AI Integration — API Endpoints
+### AI Key Setup
+- Go to **Settings → AI & QuickBooks Integration**
+- Enter your OpenAI-compatible API key (stored in browser localStorage only — never sent to our servers)
+- Use default base URL: `https://www.genspark.ai/api/llm_proxy/v1`
 
-### Required APIs for Full QB Integration
+## 📊 Data Architecture
+- **Storage:** In-memory / localStorage (demo) — ready for Cloudflare D1 upgrade
+- **Geofence Config:** Served via `/api/location/config` — default: Code Differently Campus, Wilmington DE (39.7392, -75.5398), 60m radius
+- **Stipend Rules:** ≥85% attendance, ≤3 lates, ≤2 absences
+- **Late Threshold:** >10 minutes after 9:00 AM shift start (configurable in Settings)
 
-#### 1. QuickBooks Online API (OAuth 2.0)
-```
-Base URL: https://quickbooks.api.intuit.com
-Auth URL: https://appcenter.intuit.com/connect/oauth2
-Token URL: https://oauth.platform.intuit.com/oauth2/v1/tokens/bearer
+## 🎨 Design System
+- **Navy:** `#1E1B2E` (background, cards)
+- **Gradient:** Orange `#F4703A` → Pink `#E040A0` → Purple `#9B3DE8` (buttons, accents, logo)
+- **Font:** System sans-serif, mobile-first responsive layout
 
-Key Endpoints:
-POST /v3/company/{companyId}/employee          → Create/update student as employee
-POST /v3/company/{companyId}/timeactivity      → Log attendance as time entry
-GET  /v3/company/{companyId}/query             → Query existing entries
-POST /v3/company/{companyId}/batch             → Batch submit all attendance at once
-
-Scopes needed:
-  com.intuit.quickbooks.accounting
-  com.intuit.quickbooks.payment
-```
-
-#### 2. OpenAI API (AI Entry Review)
-```
-Base URL: https://api.openai.com/v1
-POST /chat/completions   → GPT-4o reviews attendance data, flags anomalies,
-                           suggests QB entry categories, auto-fills payroll fields
-
-Prompt: "Review this attendance record and generate a QB TimeActivity entry:
-{student_name, hours, status, date, cohort, stipend_amount}"
-```
-
-#### 3. SendGrid API (Automated Email Alerts)
-```
-Base URL: https://api.sendgrid.com/v3
-POST /mail/send          → Send late threshold alerts to admin + student
-POST /mail/send          → Weekly digest to Cristina with attendance summary
-```
-
-#### 4. Google Sheets API (Export)
-```
-Base URL: https://sheets.googleapis.com/v4
-POST /spreadsheets/{id}/values/{range}:append  → Append attendance rows
-GET  /spreadsheets/{id}/values/{range}          → Read existing data
-```
-
-#### 5. Google Maps / Geolocation
-```
-Browser API: navigator.geolocation.getCurrentPosition()  → Student clock-in GPS
-Verify: Compare lat/lng against campus coordinates with Haversine formula
-Radius: Configurable (default 200m)
-```
-
-### QB AI Workflow (Full Flow)
-```
-1. Instructor marks students Present/Late/Absent → /instructor
-2. Admin clicks "Run AI Sync" → AI reviews all records
-3. AI generates QB TimeActivity entries with:
-   - Employee ID (mapped from student email)
-   - Hours (from clock-in/out timestamps)
-   - Description ("Stipend — Web Dev Cohort 12 — March 19")
-   - Class (cohort name)
-   - Status (approved/needs review)
-4. Admin reviews flagged entries → single "Confirm" click per student
-5. Batch POST to QB API → entries appear in QB payroll
-6. Receipt stored in Connect Differently for audit trail
-```
-
----
-
-## 💾 Data Architecture
-- **Storage**: Cloudflare D1 (SQLite) for production
-- **Key Tables**: `students`, `shifts`, `attendance_records`, `stipend_periods`
-- **Local Dev**: `--local` flag auto-creates SQLite mirror
+## 🛠️ Tech Stack
+- **Backend:** Hono framework (TypeScript) on Cloudflare Workers
+- **Frontend:** Vanilla JS + Tailwind via CDN + FontAwesome icons
+- **Maps:** Leaflet.js (admin geofence), Canvas API (student proximity map)
+- **Charts:** Chart.js (admin dashboard)
+- **Deploy:** Cloudflare Pages (edge network, global CDN)
+- **Build:** Vite + `@hono/vite-cloudflare-pages`
 
 ## 🚀 Deployment
-- **Platform**: Cloudflare Pages
-- **Build**: `npm run build` → `dist/_worker.js`
-- **Dev Server**: `pm2 start ecosystem.config.cjs`
-- **Status**: ✅ Running
+- **Platform:** Cloudflare Pages
+- **Project:** `shiftsync`
+- **Status:** ✅ Active
+- **Last Deployed:** 2026-03-16
+- **Build command:** `npm run build`
+- **Output dir:** `dist/`
 
-## 📅 Last Updated
-March 19, 2025
+## 📋 Stipend Eligibility Rules
+- Present days count toward stipend (not Late or Absent)
+- Late arrivals >10 min after shift start → "Late" status
+- Max 3 lates before stipend risk (yellow indicator)
+- Max 2 absences before ineligible (red indicator)
+- All thresholds configurable by Admin in `/settings`
+
+## 👤 Demo Logins
+| Role | Email | Password |
+|------|-------|----------|
+| Student | alex@codedifferently.org | demo1234 |
+| Instructor | instructor@codedifferently.org | demo1234 |
+| Admin | cristina@codedifferently.org | demo1234 |
