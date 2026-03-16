@@ -40,16 +40,68 @@ function demoLogin(role) {
   });
 }
 
+/* ── LOGIN STATE MANAGER (Bug Fix 1) ────────────────
+   Resets spinner + re-enables button on every page visit.
+   Uses sessionStorage flag to detect "back navigation".
+   If already authenticated (role stored), redirect to dashboard.
+   Degrades gracefully: on any error defaults to usable login state. */
+function resetLoginUI() {
+  try {
+    const btn  = document.getElementById('loginBtnText');
+    const spin = document.getElementById('loginSpinner');
+    const form = document.getElementById('loginForm');
+    if (btn)  { btn.style.display  = 'inline-flex'; }
+    if (spin) { spin.style.display = 'none'; }
+    if (form) { form.style.pointerEvents = 'auto'; form.style.opacity = '1'; }
+    // Clear any stale in-flight auth flag
+    sessionStorage.removeItem('cd_auth_pending');
+  } catch(e) { /* fail-safe: do nothing, keep page usable */ }
+}
+
 function handleLogin(e) {
   e.preventDefault();
-  const btn = document.getElementById('loginBtnText');
+  // Guard: prevent double-submit
+  if (sessionStorage.getItem('cd_auth_pending') === '1') return;
+  sessionStorage.setItem('cd_auth_pending', '1');
+
+  const btn  = document.getElementById('loginBtnText');
   const spin = document.getElementById('loginSpinner');
-  if (btn) btn.style.display = 'none';
+  const form = document.getElementById('loginForm');
+  if (btn)  btn.style.display  = 'none';
   if (spin) spin.style.display = 'inline-flex';
+  if (form) form.style.pointerEvents = 'none';
+
   setTimeout(() => {
-    const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
-    window.location.href = dest[currentRole] || '/student';
+    try {
+      const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
+      // Store role so redirect-back detection works
+      sessionStorage.setItem('cd_role', currentRole);
+      sessionStorage.removeItem('cd_auth_pending');
+      window.location.href = dest[currentRole] || '/student';
+    } catch(e) {
+      // Fail-safe: reset UI so user can try again
+      resetLoginUI();
+    }
   }, 800);
+}
+
+// ── Auto-reset on every login page load / back-navigation ──
+if (document.getElementById('loginForm')) {
+  // Reset immediately in case spinner was frozen from previous visit
+  resetLoginUI();
+  // Also fire on pageshow (catches bfcache / browser back button)
+  window.addEventListener('pageshow', (ev) => {
+    if (document.getElementById('loginForm')) resetLoginUI();
+  });
+  // If user already has a stored role session, redirect to their dashboard
+  const storedRole = sessionStorage.getItem('cd_role');
+  if (storedRole && ['student','instructor','admin'].includes(storedRole)) {
+    const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
+    // Only auto-redirect if they came back via back button (persisted entry)
+    if (document.referrer && document.referrer !== window.location.href) {
+      window.location.replace(dest[storedRole]);
+    }
+  }
 }
 
 function togglePw() {
@@ -852,6 +904,322 @@ function exportCSV() {
 function exportSheets() { showToast('Sending to Google Sheets…', 'blue'); setTimeout(() => showToast('✓ Sent to Google Sheets!', 'green'), 1500); }
 function exportQB()     { showToast('⚡ Syncing to QuickBooks…', 'purple'); setTimeout(() => showToast('✓ QuickBooks sync complete!', 'green'), 2000); }
 
+/* ══════════════════════════════════════════════════════════════════
+   SMART BUILD — ReportIntelligenceService  (New Feature)
+   Modular AI-assisted report generation. Falls back to manual mode
+   gracefully if AI is unavailable or fails.
+   ══════════════════════════════════════════════════════════════════ */
+
+const ReportIntelligenceService = (() => {
+  // ── Sample dataset the AI will analyze ──────────────
+  const SAMPLE_DATA = {
+    students: [
+      { name:'Alex Johnson',    hours:156.5, pct:92, lates:2, absences:1, status:'eligible',   verified:18, flagged:0 },
+      { name:'Maria Garcia',    hours:140.0, pct:82, lates:4, absences:2, status:'ineligible', verified:14, flagged:3 },
+      { name:'DeShawn Williams',hours:158.0, pct:93, lates:1, absences:1, status:'eligible',   verified:19, flagged:0 },
+      { name:'Priya Patel',     hours:145.0, pct:86, lates:2, absences:3, status:'at-risk',    verified:15, flagged:1 },
+      { name:'Liam Chen',       hours:168.0, pct:100,lates:0, absences:0, status:'eligible',   verified:20, flagged:0 },
+      { name:'Aaliyah Brown',   hours:138.0, pct:80, lates:5, absences:2, status:'ineligible', verified:12, flagged:4 },
+      { name:'Marcus Thompson', hours:162.5, pct:98, lates:1, absences:0, status:'eligible',   verified:20, flagged:0 },
+      { name:'Sofia Rodriguez', hours:150.0, pct:87, lates:2, absences:2, status:'at-risk',    verified:16, flagged:2 },
+    ],
+    dailyTrends: [
+      { day:'Mon', present:38, late:3, absent:1 },
+      { day:'Tue', present:35, late:5, absent:2 },
+      { day:'Wed', present:40, late:1, absent:1 },
+      { day:'Thu', present:36, late:4, absent:2 },
+      { day:'Fri', present:33, late:2, absent:7 },
+    ],
+    geofence: { totalVerifications:160, full:130, partial:18, failed:12 }
+  };
+
+  // ── Analyze data and generate blueprint (pure JS — no AI key needed) ─
+  function analyzeLocally(sources, scope, depth) {
+    const data = SAMPLE_DATA;
+    const scoped = scope === 'eligible'  ? data.students.filter(s => s.status === 'eligible') :
+                   scope === 'atrisk'    ? data.students.filter(s => s.status !== 'eligible') :
+                   data.students;
+
+    const totalStudents = scoped.length;
+    const eligible      = scoped.filter(s => s.status === 'eligible').length;
+    const atRisk        = scoped.filter(s => s.status === 'at-risk').length;
+    const ineligible    = scoped.filter(s => s.status === 'ineligible').length;
+    const avgHours      = (scoped.reduce((a,s) => a+s.hours,0) / totalStudents).toFixed(1);
+    const avgPct        = (scoped.reduce((a,s) => a+s.pct,0) / totalStudents).toFixed(1);
+    const totalLates    = scoped.reduce((a,s) => a+s.lates, 0);
+    const worstDay      = data.dailyTrends.reduce((a,b) => b.absent > a.absent ? b : a);
+    const bestDay       = data.dailyTrends.reduce((a,b) => b.present > a.present ? b : a);
+    const geoPassRate   = Math.round((data.geofence.full / data.geofence.totalVerifications) * 100);
+    const topStudent    = scoped.reduce((a,b) => b.pct > a.pct ? b : a);
+    const riskStudents  = scoped.filter(s => s.lates >= 3 || s.absences >= 2);
+
+    const sections = [];
+    if (sources.attendance) sections.push({
+      icon: 'fa-calendar-check', color: 'green', title: 'Attendance Summary',
+      metrics: [
+        { label: 'Total Students Analyzed', value: totalStudents },
+        { label: 'Avg Attendance Rate',     value: avgPct + '%' },
+        { label: 'Avg Hours Worked',        value: avgHours + 'h' },
+        { label: 'Best Attendance Day',     value: bestDay.day + ' (' + bestDay.present + ' present)' },
+        { label: 'Worst Attendance Day',    value: worstDay.day + ' (' + worstDay.absent + ' absent)' },
+      ]
+    });
+    if (sources.stipend) sections.push({
+      icon: 'fa-dollar-sign', color: 'purple', title: 'Stipend Eligibility Breakdown',
+      metrics: [
+        { label: '✅ Eligible',   value: eligible + ' students (' + Math.round(eligible/totalStudents*100) + '%)' },
+        { label: '⚠ At-Risk',    value: atRisk   + ' students' },
+        { label: '❌ Ineligible', value: ineligible + ' students' },
+        { label: 'Top Performer', value: topStudent.name + ' (' + topStudent.pct + '%)' },
+        { label: 'Threshold',     value: '≥85% attendance, ≤3 lates, ≤2 absences' },
+      ]
+    });
+    if (sources.clockin) sections.push({
+      icon: 'fa-clock', color: 'blue', title: 'Clock-In Verification Stats',
+      metrics: [
+        { label: 'Total Verifications',     value: data.geofence.totalVerifications },
+        { label: '✅ Full Verified',         value: data.geofence.full + ' (' + geoPassRate + '%)' },
+        { label: '⚠ Partial Verified',      value: data.geofence.partial },
+        { label: '❌ Failed Verification',   value: data.geofence.failed },
+        { label: 'GPS Compliance Rate',      value: geoPassRate + '%' },
+      ]
+    });
+    if (sources.late) sections.push({
+      icon: 'fa-triangle-exclamation', color: 'yellow', title: 'Late Arrival Analysis',
+      metrics: [
+        { label: 'Total Late Arrivals (period)', value: totalLates },
+        { label: 'Avg Lates per Student',        value: (totalLates/totalStudents).toFixed(1) },
+        { label: 'Highest Late Day',             value: 'Tuesday (5 lates avg)' },
+        { label: 'Students at Late-Risk (≥3)',   value: scoped.filter(s => s.lates >= 3).length },
+        { label: 'Recommendation',               value: 'Review Friday early-departure policy' },
+      ]
+    });
+    if (sources.geo) sections.push({
+      icon: 'fa-map-location-dot', color: 'orange', title: 'Geofence Compliance',
+      metrics: [
+        { label: 'Compliance Rate',      value: geoPassRate + '%' },
+        { label: 'Outside-Fence Flags',  value: data.geofence.failed + ' clock-ins flagged' },
+        { label: 'Manual Review Needed', value: data.geofence.partial + ' records' },
+        { label: 'Most Flagged Student', value: 'Aaliyah Brown (4 flags)' },
+        { label: 'Recommendation',       value: 'Increase radius to 80m or verify campus pin' },
+      ]
+    });
+    if (sources.activity) sections.push({
+      icon: 'fa-chart-line', color: 'pink', title: 'Student Activity Insights',
+      metrics: [
+        { label: 'At-Risk Students',          value: riskStudents.map(s=>s.name).join(', ') || 'None' },
+        { label: 'Perfect Attendance',        value: scoped.filter(s=>s.absences===0 && s.lates===0).map(s=>s.name).join(', ') || 'None' },
+        { label: 'Highest Hours',             value: scoped.reduce((a,b) => b.hours>a.hours?b:a).name },
+        { label: 'Most Improved Opportunity', value: scoped.reduce((a,b) => b.pct<a.pct?b:a).name },
+        { label: 'Recommended Action',        value: riskStudents.length ? 'Schedule check-ins for at-risk students' : 'All students on track' },
+      ]
+    });
+
+    const insights = [
+      eligible >= Math.ceil(totalStudents*0.75)
+        ? `✅ Strong cohort: ${Math.round(eligible/totalStudents*100)}% of students are stipend eligible.`
+        : `⚠ Only ${Math.round(eligible/totalStudents*100)}% eligible — consider intervention for ${atRisk + ineligible} students.`,
+      totalLates > totalStudents * 2
+        ? `⚠ High late rate detected (${totalLates} total). ${worstDay.day} has the most absences — consider schedule review.`
+        : `✅ Late arrivals within acceptable range (${totalLates} total across cohort).`,
+      geoPassRate >= 90
+        ? `✅ Geofence compliance is excellent at ${geoPassRate}%.`
+        : `⚠ GPS verification failing for ${100-geoPassRate}% of clock-ins — review geofence radius or campus pin location.`,
+    ];
+
+    return { sections, insights, meta: { totalStudents, eligible, atRisk, ineligible, avgHours, avgPct, geoPassRate } };
+  }
+
+  // ── AI-enhanced analysis (uses OpenAI key if available) ──────────
+  async function analyzeWithAI(sources, scope, depth, startDate, endDate) {
+    const k = getAIKey(), b = getAIBase();
+    if (!k) return null; // No key — fall through to local analysis
+
+    const data = SAMPLE_DATA;
+    const prompt = `You are ReportIntelligenceService for Code Differently attendance system.
+Analyze this attendance data and produce a Smart Build report blueprint. Respond with JSON only.
+
+DATA: ${JSON.stringify({ sources, scope, depth, dateRange: { startDate, endDate }, students: data.students, trends: data.dailyTrends, geofence: data.geofence })}
+
+Return JSON: { "sections": [{"title":"...","insight":"...","metrics":[{"label":"...","value":"..."}]}], "keyInsights": ["..."], "recommendation": "..." }`;
+
+    try {
+      const res = await fetch((b||'https://www.genspark.ai/api/llm_proxy/v1') + '/chat/completions', {
+        method:'POST',
+        headers:{'Content-Type':'application/json','Authorization':'Bearer '+k},
+        body: JSON.stringify({ model:'gpt-4o-mini', messages:[{role:'user',content:prompt}], temperature:0.3, max_tokens:1500 })
+      });
+      if (!res.ok) return null;
+      const json = await res.json();
+      const raw  = json.choices[0].message.content.replace(/```json\n?/g,'').replace(/```\n?/g,'').trim();
+      return { aiEnhanced: true, raw: JSON.parse(raw) };
+    } catch { return null; }
+  }
+
+  return { analyzeLocally, analyzeWithAI, SAMPLE_DATA };
+})();
+
+// ── Smart Build UI controller ────────────────────────
+function openSmartBuild() {
+  document.getElementById('smartBuildModal').style.display = 'flex';
+  document.getElementById('sbStep1').style.display = 'block';
+  document.getElementById('sbStep2').style.display = 'none';
+  document.getElementById('sbStep3').style.display = 'none';
+  document.getElementById('sbFallback').style.display = 'none';
+  // Set date defaults
+  const today = new Date().toISOString().slice(0,10);
+  const firstOfMonth = new Date(); firstOfMonth.setDate(1);
+  const sd = document.getElementById('sbStartDate');
+  const ed = document.getElementById('sbEndDate');
+  if (sd) sd.value = firstOfMonth.toISOString().slice(0,10);
+  if (ed) ed.value = today;
+}
+
+function closeSmartBuild() {
+  document.getElementById('smartBuildModal').style.display = 'none';
+}
+
+function sbGoBack() {
+  document.getElementById('sbStep3').style.display = 'none';
+  document.getElementById('sbFallback').style.display = 'none';
+  document.getElementById('sbStep1').style.display = 'block';
+}
+
+async function runSmartBuild() {
+  // Gather selected sources
+  const sources = {
+    attendance: document.getElementById('sbSrcAttendance')?.checked,
+    clockin:    document.getElementById('sbSrcClockin')?.checked,
+    activity:   document.getElementById('sbSrcActivity')?.checked,
+    geo:        document.getElementById('sbSrcGeo')?.checked,
+    stipend:    document.getElementById('sbSrcStipend')?.checked,
+    late:       document.getElementById('sbSrcLate')?.checked,
+  };
+  const scope     = document.getElementById('sbScope')?.value     || 'all';
+  const depth     = document.getElementById('sbDepth')?.value     || 'standard';
+  const startDate = document.getElementById('sbStartDate')?.value || '';
+  const endDate   = document.getElementById('sbEndDate')?.value   || '';
+
+  // Switch to processing step
+  document.getElementById('sbStep1').style.display = 'none';
+  document.getElementById('sbStep2').style.display = 'block';
+
+  // Animated progress steps
+  const steps = ['sbprog-1','sbprog-2','sbprog-3','sbprog-4','sbprog-5'];
+  const stepLabels = [
+    'Loading data sources', 'Analyzing attendance patterns',
+    'Detecting trends & anomalies', 'Generating report blueprint', 'Constructing report sections'
+  ];
+  let result = null;
+
+  for (let i = 0; i < steps.length; i++) {
+    const el = document.getElementById(steps[i]);
+    if (el) { el.innerHTML = `<i class="fa fa-spinner fa-spin"></i> ${stepLabels[i]}`; el.className = 'sb-prog-step active'; }
+    const subEl = document.getElementById('sbProcessSub');
+    if (subEl) subEl.textContent = stepLabels[i] + '…';
+    await new Promise(r => setTimeout(r, depth === 'deep' ? 700 : 480));
+    if (el) { el.innerHTML = `<i class="fa fa-circle-check"></i> ${stepLabels[i]}`; el.className = 'sb-prog-step done'; }
+
+    // On step 4, try AI (with 3s timeout) then fall back to local
+    if (i === 3) {
+      const aiTitle = document.getElementById('sbProcessTitle');
+      if (aiTitle) aiTitle.textContent = 'AI analysis running…';
+      try {
+        const aiResult = await Promise.race([
+          ReportIntelligenceService.analyzeWithAI(sources, scope, depth, startDate, endDate),
+          new Promise(r => setTimeout(() => r(null), 3000))
+        ]);
+        if (aiResult) result = { ...ReportIntelligenceService.analyzeLocally(sources, scope, depth), aiEnhanced: true, aiRaw: aiResult.raw };
+        else          result = ReportIntelligenceService.analyzeLocally(sources, scope, depth);
+      } catch { result = ReportIntelligenceService.analyzeLocally(sources, scope, depth); }
+    }
+  }
+
+  await new Promise(r => setTimeout(r, 300));
+
+  // Guard: if result failed, show fallback
+  if (!result || !result.sections || result.sections.length === 0) {
+    document.getElementById('sbStep2').style.display = 'none';
+    document.getElementById('sbFallback').style.display = 'block';
+    return;
+  }
+
+  // Render blueprint
+  renderSmartBuildResult(result, sources);
+}
+
+function renderSmartBuildResult(result, sources) {
+  document.getElementById('sbStep2').style.display = 'none';
+  document.getElementById('sbStep3').style.display = 'block';
+
+  // Subtitle
+  const sub = document.getElementById('sbResultSub');
+  if (sub) sub.textContent = `AI generated an optimized report with ${result.sections.length} sections${result.aiEnhanced ? ' (AI-enhanced)' : ' (local analysis)'}`;
+
+  // Blueprint sections
+  const bp = document.getElementById('sbBlueprint');
+  if (bp) {
+    const colorMap = { green:'#22C55E', purple:'#9B3DE8', blue:'#3B82F6', yellow:'#F59E0B', orange:'#F4703A', pink:'#E040A0' };
+    bp.innerHTML = result.sections.map((sec, i) => `
+      <div class="sb-section" style="animation-delay:${i*80}ms">
+        <div class="sb-section-header" style="border-color:${colorMap[sec.color]||'var(--purple)'}">
+          <i class="fa ${sec.icon}" style="color:${colorMap[sec.color]||'var(--purple)'}"></i>
+          <strong>${sec.title}</strong>
+          <span class="sb-section-num">Section ${i+1}</span>
+        </div>
+        <div class="sb-metrics">
+          ${sec.metrics.map(m => `
+            <div class="sb-metric-row">
+              <span class="sb-metric-label">${m.label}</span>
+              <span class="sb-metric-value">${m.value}</span>
+            </div>`).join('')}
+        </div>
+      </div>`).join('');
+  }
+
+  // Key insights
+  const ins = document.getElementById('sbInsights');
+  if (ins && result.insights) {
+    ins.innerHTML = `
+      <div class="sb-insights-title"><i class="fa fa-lightbulb"></i> Key Insights</div>
+      ${result.insights.map(i => `<div class="sb-insight-item">${i}</div>`).join('')}
+      ${result.aiEnhanced ? '<div class="sb-ai-tag"><i class="fa fa-wand-magic-sparkles"></i> AI-enhanced analysis</div>' : ''}`;
+  }
+
+  // Store result for export/apply
+  window._sbLastResult = result;
+}
+
+function sbExportCSV() {
+  if (!window._sbLastResult) { showToast('No report to export', 'orange'); return; }
+  const rows = [['Section','Metric','Value']];
+  window._sbLastResult.sections.forEach(sec => {
+    sec.metrics.forEach(m => rows.push([sec.title, m.label, m.value]));
+  });
+  const csv  = rows.map(r => r.map(c => `"${c}"`).join(',')).join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const a = document.createElement('a');
+  a.href = URL.createObjectURL(blob);
+  a.download = 'SmartBuild_Report_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.click();
+  showToast('✓ Smart Build report exported!', 'green');
+}
+
+function sbApplyToBuilder() {
+  closeSmartBuild();
+  // Pre-fill the manual report builder with Smart Build's recommended settings
+  const rt = document.getElementById('reportType');
+  if (rt) rt.value = 'attendance';
+  const sf = document.getElementById('studentFilter');
+  if (sf) sf.value = 'All Students';
+  showToast('✓ Smart Build applied to report builder!', 'purple');
+}
+
+function sbApplyFallback() {
+  closeSmartBuild();
+  showToast('Manual report builder ready with recommended settings', 'blue');
+}
+
 /* ── SETTINGS ────────────────────────────────────── */
 function saveSettings() {
   const toast = document.getElementById('saveToast');
@@ -867,9 +1235,90 @@ function updateChart(v)     { showToast('Chart updated: ' + v, 'purple'); }
 function updateReportFields(v) { }
 function filterRecords(v)   { }
 
-/* ══════════════════════════════════════════════════════
+/* ══════════════════════════════════════════════════════════════════
    GEOFENCE ADMIN PANEL — saveGeofence, map, audit log
-   ══════════════════════════════════════════════════════ */
+   ══════════════════════════════════════════════════════════════════ */
+
+/* ── Bug Fix 2: Address Geocoding ────────────────────
+   Uses OpenStreetMap Nominatim (free, no API key required).
+   Results populate lat/lon fields and re-center the Leaflet map.  */
+async function geocodeAddress() {
+  const input  = document.getElementById('geoAddressInput');
+  const status = document.getElementById('geocodeStatus');
+  const results = document.getElementById('geocodeResults');
+  if (!input || !input.value.trim()) { showToast('Enter an address to search', 'orange'); return; }
+
+  const query = input.value.trim();
+  if (status)  { status.style.display = 'flex'; status.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Searching…'; status.className = 'geocode-status searching'; }
+  if (results) results.style.display = 'none';
+
+  try {
+    const url  = `https://nominatim.openstreetmap.org/search?format=json&limit=5&q=${encodeURIComponent(query)}`;
+    const res  = await fetch(url, { headers: { 'Accept-Language': 'en', 'User-Agent': 'ShiftSync-CodeDifferently/1.0' } });
+    if (!res.ok) throw new Error('Search failed');
+    const data = await res.json();
+
+    if (!data || data.length === 0) {
+      if (status) { status.innerHTML = '<i class="fa fa-circle-xmark"></i> No results found. Try a more specific address.'; status.className = 'geocode-status error'; }
+      return;
+    }
+
+    if (status) status.style.display = 'none';
+    if (results) {
+      results.style.display = 'block';
+      results.innerHTML = data.map((r, i) => `
+        <div class="geocode-result-item" onclick="selectGeoResult(${r.lat}, ${r.lon}, '${r.display_name.replace(/'/g,"\\'")}', this)">
+          <i class="fa fa-location-dot"></i>
+          <div class="geocode-result-text">
+            <strong>${r.display_name.split(',').slice(0,3).join(', ')}</strong>
+            <small>${r.display_name}</small>
+          </div>
+          <div class="geocode-result-coords">${parseFloat(r.lat).toFixed(4)}, ${parseFloat(r.lon).toFixed(4)}</div>
+        </div>`).join('');
+    }
+  } catch(e) {
+    if (status) { status.innerHTML = '<i class="fa fa-triangle-exclamation"></i> Search error — check internet connection'; status.className = 'geocode-status error'; status.style.display='flex'; }
+  }
+}
+
+function selectGeoResult(lat, lon, displayName, el) {
+  // Highlight selected
+  document.querySelectorAll('.geocode-result-item').forEach(r => r.classList.remove('selected'));
+  if (el) el.classList.add('selected');
+
+  lat = parseFloat(lat); lon = parseFloat(lon);
+
+  // Fill coordinate fields
+  const laEl = document.getElementById('geoLat');
+  const loEl = document.getElementById('geoLon');
+  const naEl = document.getElementById('geoName');
+  const inEl = document.getElementById('geoAddressInput');
+  if (laEl) laEl.value = lat.toFixed(6);
+  if (loEl) loEl.value = lon.toFixed(6);
+  if (naEl && naEl.value === 'Code Differently Campus') {
+    naEl.value = displayName.split(',').slice(0,2).join(',').trim();
+  }
+  if (inEl) inEl.value = displayName.split(',').slice(0,3).join(', ');
+
+  // Re-center Leaflet map and move campus marker
+  if (geoMap && window.L) {
+    geoMap.setView([lat, lon], 17);
+    if (campusMarker) { campusMarker.setLatLng([lat, lon]); }
+    updateRadiusCircle(lat, lon, parseInt(document.getElementById('geoRadius')?.value || 60));
+  }
+
+  // Update status bar
+  const sdv = document.getElementById('geoStatusDistVal');
+  if (sdv) sdv.textContent = `Location set: ${lat.toFixed(4)}, ${lon.toFixed(4)}`;
+
+  // Hide results after short delay
+  setTimeout(() => {
+    const res = document.getElementById('geocodeResults');
+    if (res) res.style.display = 'none';
+  }, 1200);
+
+  showToast(`✓ Location set to ${displayName.split(',').slice(0,2).join(',')}`, 'green');
+}
 
 // ── Local config store (mirrors server) ──────────────
 let localGeoConfig = null;
@@ -999,8 +1448,20 @@ function initLeafletMap() {
 function updateRadiusCircle(lat, lng, rad) {
   if (!radiusCircle) return;
   if (!rad) rad = parseInt(document.getElementById('geoRadius')?.value) || 60;
+  // Clamp radius to safe bounds 20–300m
+  rad = Math.max(20, Math.min(300, rad));
+  // Use current marker position if lat/lng not provided
+  if (lat === null || lng === null) {
+    if (campusMarker) { const p = campusMarker.getLatLng(); lat = p.lat; lng = p.lng; }
+    else return;
+  }
   radiusCircle.setLatLng([lat, lng]);
   radiusCircle.setRadius(rad);
+  // Sync slider + display label
+  const slider  = document.getElementById('geoRadius');
+  const display = document.getElementById('radiusDisplay');
+  if (slider)  slider.value      = rad;
+  if (display) display.textContent = rad;
 }
 
 // ── Drop pin at current user location ────────────────

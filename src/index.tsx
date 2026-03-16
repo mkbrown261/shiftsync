@@ -1175,6 +1175,142 @@ function reportsPage(): string {
     <h2><i class="fa fa-chart-bar"></i> Reports &amp; Export</h2>
     <p class="page-sub">Generate attendance reports and export data</p>
   </div>
+  <div class="header-actions">
+    <button class="btn-smartbuild" onclick="openSmartBuild()">
+      <i class="fa fa-wand-magic-sparkles"></i> Smart Build
+      <span class="sb-badge">AI</span>
+    </button>
+  </div>
+</div>
+
+<!-- ══ SMART BUILD MODAL (ReportIntelligenceService) ══════════════ -->
+<div class="modal-overlay" id="smartBuildModal" style="display:none">
+  <div class="modal modal-wide">
+    <div class="modal-header sb-modal-header">
+      <div class="sb-modal-title">
+        <i class="fa fa-wand-magic-sparkles sb-icon-pulse"></i>
+        <div>
+          <h3>Smart Build</h3>
+          <p class="sb-subtitle">AI-assisted report generation</p>
+        </div>
+      </div>
+      <button class="modal-close" onclick="closeSmartBuild()"><i class="fa fa-xmark"></i></button>
+    </div>
+
+    <!-- Step 1: Configure -->
+    <div id="sbStep1" class="sb-step">
+      <div class="sb-step-label"><span class="sb-step-num">1</span> Configure Data Sources</div>
+      <div class="sb-sources-grid">
+        <label class="sb-source-check">
+          <input type="checkbox" id="sbSrcAttendance" checked/>
+          <i class="fa fa-calendar-check"></i> Attendance Records
+        </label>
+        <label class="sb-source-check">
+          <input type="checkbox" id="sbSrcClockin" checked/>
+          <i class="fa fa-clock"></i> Clock-In Verification Data
+        </label>
+        <label class="sb-source-check">
+          <input type="checkbox" id="sbSrcActivity" checked/>
+          <i class="fa fa-chart-line"></i> Student Activity Logs
+        </label>
+        <label class="sb-source-check">
+          <input type="checkbox" id="sbSrcGeo" checked/>
+          <i class="fa fa-map-location-dot"></i> Geofence Compliance Stats
+        </label>
+        <label class="sb-source-check">
+          <input type="checkbox" id="sbSrcStipend" checked/>
+          <i class="fa fa-dollar-sign"></i> Stipend Eligibility
+        </label>
+        <label class="sb-source-check">
+          <input type="checkbox" id="sbSrcLate"/>
+          <i class="fa fa-triangle-exclamation"></i> Late Arrival Distribution
+        </label>
+      </div>
+      <div class="sb-date-row">
+        <div class="form-group">
+          <label><i class="fa fa-calendar"></i> Date Range</label>
+          <div class="date-range">
+            <input type="date" class="form-control" id="sbStartDate"/>
+            <span>to</span>
+            <input type="date" class="form-control" id="sbEndDate"/>
+          </div>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-users"></i> Scope</label>
+          <select class="form-control" id="sbScope">
+            <option value="all">All Students</option>
+            <option value="cohort2024">Cohort 2024</option>
+            <option value="eligible">Stipend Eligible Only</option>
+            <option value="atrisk">At-Risk Only</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-brain"></i> AI Analysis Depth</label>
+          <select class="form-control" id="sbDepth">
+            <option value="standard">Standard (fast)</option>
+            <option value="deep">Deep Analysis</option>
+            <option value="summary">Executive Summary</option>
+          </select>
+        </div>
+      </div>
+      <div class="sb-hint">
+        <i class="fa fa-circle-info"></i>
+        Smart Build will analyze selected data sources and automatically construct an optimized report structure with insights.
+      </div>
+      <div class="modal-footer">
+        <button class="btn-secondary" onclick="closeSmartBuild()">Cancel</button>
+        <button class="btn-primary" onclick="runSmartBuild()">
+          <i class="fa fa-wand-magic-sparkles"></i> Analyze &amp; Build
+        </button>
+      </div>
+    </div>
+
+    <!-- Step 2: AI Processing -->
+    <div id="sbStep2" class="sb-step" style="display:none">
+      <div class="sb-processing">
+        <div class="sb-process-ring"></div>
+        <div class="sb-process-text">
+          <strong id="sbProcessTitle">Analyzing data sources…</strong>
+          <p id="sbProcessSub">ReportIntelligenceService is scanning your attendance data</p>
+        </div>
+      </div>
+      <div class="sb-progress-steps" id="sbProgressSteps">
+        <div class="sb-prog-step" id="sbprog-1"><i class="fa fa-spinner fa-spin"></i> Loading data sources</div>
+        <div class="sb-prog-step pending" id="sbprog-2"><i class="fa fa-circle"></i> Analyzing attendance patterns</div>
+        <div class="sb-prog-step pending" id="sbprog-3"><i class="fa fa-circle"></i> Detecting trends &amp; anomalies</div>
+        <div class="sb-prog-step pending" id="sbprog-4"><i class="fa fa-circle"></i> Generating report blueprint</div>
+        <div class="sb-prog-step pending" id="sbprog-5"><i class="fa fa-circle"></i> Constructing report sections</div>
+      </div>
+    </div>
+
+    <!-- Step 3: Blueprint Result -->
+    <div id="sbStep3" class="sb-step" style="display:none">
+      <div class="sb-result-header">
+        <i class="fa fa-circle-check sb-result-icon"></i>
+        <div>
+          <strong>Smart Build Complete</strong>
+          <p id="sbResultSub">AI generated an optimized report with 5 sections</p>
+        </div>
+      </div>
+      <div id="sbBlueprint" class="sb-blueprint"></div>
+      <div class="sb-insights-box" id="sbInsights"></div>
+      <div class="modal-footer sb-result-footer">
+        <button class="btn-secondary" onclick="sbGoBack()"><i class="fa fa-arrow-left"></i> Reconfigure</button>
+        <button class="btn-secondary" onclick="sbExportCSV()"><i class="fa fa-file-csv"></i> Export CSV</button>
+        <button class="btn-primary" onclick="sbApplyToBuilder()"><i class="fa fa-check"></i> Apply to Report Builder</button>
+      </div>
+    </div>
+
+    <!-- Fallback: Manual mode if AI fails -->
+    <div id="sbFallback" class="sb-step" style="display:none">
+      <div class="sb-fallback-msg">
+        <i class="fa fa-triangle-exclamation"></i>
+        <strong>Smart Build Unavailable</strong>
+        <p>AI analysis could not complete. Falling back to manual report generation with recommended settings pre-filled.</p>
+        <button class="btn-primary mt-16" onclick="sbApplyFallback()"><i class="fa fa-file-export"></i> Use Manual Builder</button>
+      </div>
+    </div>
+  </div>
 </div>
 
 <!-- Report Builder -->
@@ -1588,6 +1724,21 @@ function geofencePage(): string {
     </div>
 
     <div class="geo-form">
+      <!-- ── Address Search (Bug Fix 2) ───────────────────────── -->
+      <div class="form-group geo-address-group">
+        <label><i class="fa fa-magnifying-glass-location"></i> Search Address or School Name</label>
+        <div class="geo-search-row">
+          <input type="text" id="geoAddressInput" class="form-control"
+            placeholder="e.g. 100 West 10th Street, Wilmington, DE"
+            onkeydown="if(event.key==='Enter'){event.preventDefault();geocodeAddress();}"/>
+          <button class="btn-primary btn-sm" onclick="geocodeAddress()">
+            <i class="fa fa-search"></i> Find
+          </button>
+        </div>
+        <div id="geocodeResults" class="geocode-results" style="display:none"></div>
+        <div id="geocodeStatus" class="geocode-status" style="display:none"></div>
+      </div>
+
       <div class="form-group">
         <label><i class="fa fa-school"></i> School / Campus Name</label>
         <input type="text" id="geoName" class="form-control" value="Code Differently Campus"/>
@@ -1608,13 +1759,14 @@ function geofencePage(): string {
         <label>
           <i class="fa fa-circle-dot"></i>
           Allowed Radius — <strong><span id="radiusDisplay">60</span> meters</strong>
+          <span class="label-hint">Drag the map circle to adjust visually</span>
         </label>
-        <input type="range" id="geoRadius" class="geo-slider" min="20" max="200" value="60"
-          oninput="document.getElementById('radiusDisplay').textContent=this.value"/>
+        <input type="range" id="geoRadius" class="geo-slider" min="20" max="300" value="60"
+          oninput="document.getElementById('radiusDisplay').textContent=this.value; updateRadiusCircle(null,null,parseInt(this.value))"/>
         <div class="slider-labels">
           <span>20m (tight)</span>
-          <span>100m</span>
-          <span>200m (loose)</span>
+          <span>150m</span>
+          <span>300m (loose)</span>
         </div>
       </div>
 
