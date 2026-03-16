@@ -20,6 +20,17 @@ const app = new Hono<{ Bindings: Bindings }>()
 app.use('/static/*', serveStatic({ root: './' }))
 app.use('/api/*', cors())
 
+// Favicon — serve inline SVG to avoid 404 noise
+app.get('/favicon.ico', (c) => {
+  c.header('Content-Type', 'image/svg+xml')
+  c.header('Cache-Control', 'public, max-age=86400')
+  return c.body(`<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+    <rect width="32" height="32" rx="8" fill="#1E1B2E"/>
+    <circle cx="16" cy="16" r="10" fill="none" stroke="#F4703A" stroke-width="2.5"/>
+    <circle cx="16" cy="16" r="4" fill="#9B3DE8"/>
+  </svg>`)
+})
+
 // ── Page Routes ──────────────────────────────────────────────────────
 app.get('/', (c) => c.redirect('/login'))
 app.get('/login', (c) => c.html(loginPage()))
@@ -500,6 +511,7 @@ function shell(title: string, body: string, role: string = ''): string {
   <meta charset="UTF-8"/>
   <meta name="viewport" content="width=device-width,initial-scale=1.0"/>
   <title>${title} — ConnectDifferently</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.ico"/>
   <link rel="stylesheet" href="https://cdn.jsdelivr.net/npm/@fortawesome/fontawesome-free@6.5.0/css/all.min.css"/>
   <link rel="stylesheet" href="/static/style.css"/>
 </head>
