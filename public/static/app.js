@@ -61,108 +61,492 @@ function togglePw() {
   if (ico) { ico.className = show ? 'fa fa-eye-slash' : 'fa fa-eye'; }
 }
 
-/* ── CLOCK IN / OUT ─────────────────────────────── */
-let isClockedIn = false;
-let clockInTime = null;
-let gpsCoords = null;
+/* ══════════════════════════════════════════════════════
+   INTELLIGENT LOCATION-VERIFIED CLOCK IN/OUT SYSTEM
+   ══════════════════════════════════════════════════════ */
 
-// Attempt GPS on student page load
-if (document.getElementById('clockBtn')) {
-  const gpsText = document.getElementById('gpsText');
-  if (navigator.geolocation) {
-    navigator.geolocation.getCurrentPosition(
-      (pos) => {
-        gpsCoords = pos.coords;
-        if (gpsText) {
-          gpsText.textContent = `Location verified ✓ (${pos.coords.latitude.toFixed(4)}, ${pos.coords.longitude.toFixed(4)})`;
-          gpsText.parentElement.classList.add('gps-ok');
-        }
-      },
-      () => {
-        if (gpsText) {
-          gpsText.textContent = 'Location unavailable — manual check required';
-          gpsText.parentElement.classList.add('gps-err');
-        }
-      }
-    );
+// ── State ─────────────────────────────────────────────
+let isClockedIn   = false;
+let clockInTime   = null;
+let gpsCoords     = null;
+let gpsWatchId    = null;
+let geoConfig     = null;   // Loaded from /api/location/config
+let locationVerified = false;
+let verificationLog  = [];  // Audit trail for this session
+
+// Code Differently default campus (Wilmington, DE)
+const DEFAULT_CAMPUS = { lat: 39.7392, lon: -75.5398, radius: 60, name: 'Code Differently Campus' };
+
+// ── Haversine distance (metres) ───────────────────────
+function haversine(lat1, lon1, lat2, lon2) {
+  const R = 6371000;
+  const φ1 = lat1 * Math.PI / 180, φ2 = lat2 * Math.PI / 180;
+  const Δφ = (lat2 - lat1) * Math.PI / 180;
+  const Δλ = (lon2 - lon1) * Math.PI / 180;
+  const a  = Math.sin(Δφ/2)**2 + Math.cos(φ1)*Math.cos(φ2)*Math.sin(Δλ/2)**2;
+  return R * 2 * Math.atan2(Math.sqrt(a), Math.sqrt(1-a));
+}
+
+// ── Load geofence config from server ─────────────────
+async function loadGeoConfig() {
+  try {
+    const res = await fetch('/api/location/config');
+    if (res.ok) { geoConfig = await res.json(); }
+  } catch { /* use defaults */ }
+  if (!geoConfig) geoConfig = DEFAULT_CAMPUS;
+  return geoConfig;
+}
+
+// ── Draw mini proximity map using Canvas (no external lib needed) ──
+function drawMiniMap(studentLat, studentLon, campus, distance) {
+  const wrap = document.getElementById('miniMap');
+  if (!wrap) return;
+
+  const w = wrap.clientWidth || 320, h = 200;
+  wrap.innerHTML = `<canvas id="proximityCanvas" width="${w}" height="${h}" style="border-radius:10px"></canvas>`;
+  const canvas = document.getElementById('proximityCanvas');
+  if (!canvas) return;
+  const ctx = canvas.getContext('2d');
+
+  // Background gradient
+  const bg = ctx.createLinearGradient(0, 0, w, h);
+  bg.addColorStop(0, '#1E1B2E');
+  bg.addColorStop(1, '#2A2547');
+  ctx.fillStyle = bg;
+  ctx.fillRect(0, 0, w, h);
+
+  // Grid lines
+  ctx.strokeStyle = 'rgba(255,255,255,.05)';
+  ctx.lineWidth = 1;
+  for (let i = 0; i < w; i += 30) { ctx.beginPath(); ctx.moveTo(i,0); ctx.lineTo(i,h); ctx.stroke(); }
+  for (let i = 0; i < h; i += 30) { ctx.beginPath(); ctx.moveTo(0,i); ctx.lineTo(w,i); ctx.stroke(); }
+
+  const cx = w * 0.5, cy = h * 0.5;
+  const campusLat = campus.lat || DEFAULT_CAMPUS.lat;
+  const campusLon = campus.lon || DEFAULT_CAMPUS.lon;
+  const radius    = campus.radius || DEFAULT_CAMPUS.radius;
+
+  // Scale: how many pixels per metre
+  const maxDist = Math.max(distance * 1.4, radius * 2, 80);
+  const scale   = Math.min(cx, cy) * 0.85 / maxDist;
+  const fenceR  = radius * scale;
+
+  // Geofence circle
+  const inside = distance <= radius;
+  const grd = ctx.createRadialGradient(cx, cy, fenceR * 0.2, cx, cy, fenceR);
+  if (inside) {
+    grd.addColorStop(0, 'rgba(34,197,94,.18)');
+    grd.addColorStop(1, 'rgba(34,197,94,.04)');
   } else {
-    if (gpsText) gpsText.textContent = 'GPS not supported on this device';
+    grd.addColorStop(0, 'rgba(239,68,68,.18)');
+    grd.addColorStop(1, 'rgba(239,68,68,.04)');
+  }
+  ctx.beginPath(); ctx.arc(cx, cy, fenceR, 0, Math.PI*2);
+  ctx.fillStyle = grd; ctx.fill();
+  ctx.strokeStyle = inside ? 'rgba(34,197,94,.7)' : 'rgba(239,68,68,.7)';
+  ctx.lineWidth = 2; ctx.setLineDash([6, 4]); ctx.stroke(); ctx.setLineDash([]);
+
+  // Distance rings
+  [0.5, 1.5].forEach(mult => {
+    const r = fenceR * mult;
+    ctx.beginPath(); ctx.arc(cx, cy, r, 0, Math.PI*2);
+    ctx.strokeStyle = 'rgba(255,255,255,.05)';
+    ctx.lineWidth = 1; ctx.stroke();
+  });
+
+  // Campus pin (blue dot)
+  ctx.beginPath(); ctx.arc(cx, cy, 10, 0, Math.PI*2);
+  ctx.fillStyle = '#3B82F6'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+  ctx.fillStyle = '#fff'; ctx.font = 'bold 9px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText('CD', cx, cy+3);
+
+  // Student position
+  const latDiff = (studentLat - campusLat) * 111320;
+  const lonDiff = (studentLon - campusLon) * 111320 * Math.cos(campusLat * Math.PI/180);
+  const px = cx + lonDiff * scale;
+  const py = cy - latDiff * scale;
+
+  // Line from campus to student
+  ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(px, py);
+  ctx.strokeStyle = 'rgba(255,255,255,.25)'; ctx.lineWidth = 1; ctx.setLineDash([3,3]); ctx.stroke(); ctx.setLineDash([]);
+
+  // Student dot
+  ctx.beginPath(); ctx.arc(px, py, 8, 0, Math.PI*2);
+  ctx.fillStyle = inside ? '#22C55E' : '#EF4444'; ctx.fill();
+  ctx.strokeStyle = '#fff'; ctx.lineWidth = 2; ctx.stroke();
+
+  // Distance label
+  ctx.fillStyle = 'rgba(255,255,255,.9)'; ctx.font = '11px sans-serif'; ctx.textAlign = 'center';
+  ctx.fillText(`${Math.round(distance)}m`, (cx + px) / 2 + 4, (cy + py) / 2 - 6);
+
+  // Legend
+  ctx.font = '10px sans-serif'; ctx.textAlign = 'left';
+  [[10, h-30, '#3B82F6', 'Campus'], [10, h-16, inside?'#22C55E':'#EF4444', 'You']].forEach(([x,y,c,label]) => {
+    ctx.beginPath(); ctx.arc(x, y, 4, 0, Math.PI*2); ctx.fillStyle = c; ctx.fill();
+    ctx.fillStyle = 'rgba(255,255,255,.7)'; ctx.fillText(label, x+10, y+4);
+  });
+}
+
+// ── Update proximity banner ───────────────────────────
+function updateGeoBanner(distance, campus) {
+  const banner  = document.getElementById('geoBanner');
+  const title   = document.getElementById('geoBannerTitle');
+  const sub     = document.getElementById('geoBannerSub');
+  const badge   = document.getElementById('geoBannerBadge');
+  const fill    = document.getElementById('geoDistanceFill');
+  const pulse   = document.getElementById('geoPulse');
+  const mapBadge = document.getElementById('mapDistBadge');
+  if (!banner) return;
+
+  const radius = (campus && campus.radius) || DEFAULT_CAMPUS.radius;
+  const pct    = Math.min(100, (distance / (radius * 2)) * 100);
+  banner.style.display = 'block';
+
+  if (distance <= radius) {
+    title.textContent  = '✓ You are on campus';
+    sub.textContent    = `${Math.round(distance)}m from ${campus?.name || 'campus'} — within ${radius}m zone`;
+    badge.innerHTML    = '<span class="geo-badge-ok">INSIDE ZONE</span>';
+    if (pulse) pulse.className = 'geo-pulse pulse-green';
+    if (fill)  { fill.style.width = '100%'; fill.style.background = 'var(--green)'; }
+    if (mapBadge) mapBadge.innerHTML = `<span style="color:var(--green)">✓ ${Math.round(distance)}m — On Campus</span>`;
+  } else {
+    const over = Math.round(distance - radius);
+    title.textContent = `⚠ ${Math.round(distance)}m from campus`;
+    sub.textContent   = `${over}m outside the ${radius}m zone`;
+    badge.innerHTML   = '<span class="geo-badge-warn">OUTSIDE ZONE</span>';
+    if (pulse) pulse.className = 'geo-pulse pulse-red';
+    if (fill)  { fill.style.width = pct + '%'; fill.style.background = 'linear-gradient(90deg,var(--orange),var(--pink))'; }
+    if (mapBadge) mapBadge.innerHTML = `<span style="color:var(--orange)">⚠ ${Math.round(distance)}m</span>`;
   }
 }
 
+// ── GPS continuous watch on student page ─────────────
+async function initStudentGPS() {
+  const btn     = document.getElementById('clockBtn');
+  const gpsText = document.getElementById('gpsText');
+  const gpsIcon = document.querySelector('#gpsStatus .fa-satellite-dish');
+
+  if (!document.getElementById('clockBtn')) return;
+
+  // Load geofence config
+  await loadGeoConfig();
+
+  if (!navigator.geolocation) {
+    if (gpsText) gpsText.textContent = 'GPS not supported — please use a mobile browser';
+    if (btn) { btn.disabled = false; btn.querySelector ? (btn.querySelector('#clockBtnText') || btn).textContent = 'Clock In (No GPS)' : null; }
+    document.getElementById('clockBtnText').textContent = 'Clock In (No GPS)';
+    btn.disabled = false; return;
+  }
+
+  // Start watching position
+  gpsWatchId = navigator.geolocation.watchPosition(
+    (pos) => {
+      gpsCoords = pos.coords;
+      const campus = geoConfig || DEFAULT_CAMPUS;
+      const dist   = haversine(pos.coords.latitude, pos.coords.longitude, campus.lat || campus.latitude, campus.lon || campus.longitude);
+
+      if (gpsText) {
+        gpsText.textContent = `GPS Active — Accuracy ±${Math.round(pos.coords.accuracy)}m`;
+        gpsText.parentElement.classList.add('gps-ok');
+        gpsText.parentElement.classList.remove('gps-err');
+      }
+      if (gpsIcon) { gpsIcon.className = 'fa fa-satellite-dish'; }
+
+      // Enable the clock button
+      if (btn) {
+        btn.disabled = false;
+        const t = document.getElementById('clockBtnText');
+        if (t && !isClockedIn) t.textContent = 'Clock In';
+      }
+
+      updateGeoBanner(dist, campus);
+      drawMiniMap(pos.coords.latitude, pos.coords.longitude, campus, dist);
+    },
+    (err) => {
+      if (gpsText) {
+        gpsText.textContent = err.code === 1 ? 'Location access denied — enable in browser settings' : 'GPS error — tap to retry';
+        gpsText.parentElement.classList.add('gps-err');
+      }
+      // Still allow clock-in without GPS (offline/override)
+      if (btn) {
+        btn.disabled = false;
+        const t = document.getElementById('clockBtnText');
+        if (t && !isClockedIn) t.textContent = 'Clock In (No GPS)';
+      }
+      const banner = document.getElementById('geoBanner');
+      if (banner) {
+        banner.style.display = 'block';
+        const title = document.getElementById('geoBannerTitle');
+        const sub   = document.getElementById('geoBannerSub');
+        if (title) title.textContent = 'Location Unavailable';
+        if (sub)   sub.textContent = 'Could not get GPS — clock-in will be flagged for manual review';
+        const pulse = document.getElementById('geoPulse');
+        if (pulse) pulse.className = 'geo-pulse pulse-yellow';
+      }
+    },
+    { enableHighAccuracy: true, timeout: 15000, maximumAge: 10000 }
+  );
+}
+
+// Init on page load
+initStudentGPS();
+
+// ── Location Verification Panel ───────────────────────
+function openLocationPanel() {
+  const panel = document.getElementById('locationPanel');
+  if (panel) panel.style.display = 'block';
+
+  // Reset all checks
+  ['gps','dist','acc','wifi'].forEach(k => {
+    const st = document.getElementById(`lvc-${k}-st`);
+    const val = document.getElementById(`lvc-${k}-val`);
+    if (st)  st.innerHTML = '<i class="fa fa-spinner fa-spin"></i>';
+    if (val) val.textContent = k === 'gps' ? 'Acquiring…' : k === 'dist' ? 'Calculating…' : k === 'acc' ? 'Checking…' : 'Scanning…';
+    const row = document.getElementById(`lvc-${k}`);
+    if (row) { row.classList.remove('check-ok','check-fail','check-warn'); }
+  });
+  const res = document.getElementById('lvResult');
+  if (res) res.style.display = 'none';
+  const title = document.getElementById('lvTitle');
+  const sub   = document.getElementById('lvSub');
+  if (title) title.textContent = 'Verifying Location…';
+  if (sub)   sub.textContent = 'Please wait';
+
+  runVerificationFlow();
+}
+
+function closeLocationPanel() {
+  const panel = document.getElementById('locationPanel');
+  if (panel) panel.style.display = 'none';
+}
+
+async function runVerificationFlow() {
+  const campus  = geoConfig || DEFAULT_CAMPUS;
+  const lvShield = document.getElementById('lvShield');
+
+  // Step 1: GPS
+  await new Promise(r => setTimeout(r, 600));
+  const gpsOk = !!gpsCoords;
+  setLVC('gps',
+    gpsOk ? `${gpsCoords.latitude.toFixed(5)}, ${gpsCoords.longitude.toFixed(5)}` : 'Not available',
+    gpsOk ? 'ok' : 'fail'
+  );
+
+  // Step 2: Distance
+  await new Promise(r => setTimeout(r, 500));
+  let distance = null, insideFence = false;
+  if (gpsCoords) {
+    distance = haversine(gpsCoords.latitude, gpsCoords.longitude, campus.lat || campus.latitude, campus.lon || campus.longitude);
+    insideFence = distance <= (campus.radius || DEFAULT_CAMPUS.radius);
+    setLVC('dist', `${Math.round(distance)}m from campus`, insideFence ? 'ok' : 'fail');
+  } else {
+    setLVC('dist', 'Cannot calculate — no GPS', 'fail');
+  }
+
+  // Step 3: Accuracy
+  await new Promise(r => setTimeout(r, 400));
+  const maxAcc = campus.max_accuracy || 40;
+  if (gpsCoords) {
+    const accOk = gpsCoords.accuracy <= maxAcc;
+    setLVC('acc', `±${Math.round(gpsCoords.accuracy)}m (max: ${maxAcc}m)`, accOk ? 'ok' : 'warn');
+  } else {
+    setLVC('acc', 'No GPS data', 'fail');
+  }
+
+  // Step 4: WiFi (browser can't read WiFi SSID — show helpful message)
+  await new Promise(r => setTimeout(r, 500));
+  setLVC('wifi', 'Cannot detect — GPS location used instead', 'warn');
+
+  // Final result
+  await new Promise(r => setTimeout(r, 300));
+  const verTitle = document.getElementById('lvTitle');
+  const verSub   = document.getElementById('lvSub');
+  const result   = document.getElementById('lvResult');
+  const resultIcon = document.getElementById('lvResultIcon');
+  const resultMsg  = document.getElementById('lvResultMsg');
+  const resultAct  = document.getElementById('lvResultActions');
+
+  if (gpsOk && insideFence) {
+    locationVerified = true;
+    if (verTitle) verTitle.textContent = 'Location Verified ✓';
+    if (verSub)   verSub.textContent = `You are ${Math.round(distance)}m from campus — within the ${campus.radius || DEFAULT_CAMPUS.radius}m zone`;
+    if (lvShield) lvShield.style.color = 'var(--green)';
+    if (result) {
+      result.style.display = 'block';
+      resultIcon.innerHTML = '<i class="fa fa-circle-check" style="font-size:2.5rem;color:var(--green)"></i>';
+      resultMsg.innerHTML  = `<strong>You're on campus!</strong><br><small>${Math.round(distance)}m from ${campus.name || 'Code Differently'}</small>`;
+      resultAct.innerHTML  = `<button class="btn-primary" onclick="proceedClockIn()"><i class="fa fa-play"></i> Clock In Now</button>
+                               <button class="btn-secondary" onclick="closeLocationPanel()">Cancel</button>`;
+    }
+  } else if (gpsOk && !insideFence) {
+    locationVerified = false;
+    if (verTitle) verTitle.textContent = 'Outside Geofence';
+    if (verSub)   verSub.textContent = `You are ${Math.round(distance)}m away — ${Math.round(distance - (campus.radius||DEFAULT_CAMPUS.radius))}m outside the zone`;
+    if (lvShield) lvShield.style.color = 'var(--orange)';
+    if (result) {
+      result.style.display = 'block';
+      resultIcon.innerHTML = '<i class="fa fa-triangle-exclamation" style="font-size:2.5rem;color:var(--orange)"></i>';
+      resultMsg.innerHTML  = `<strong>You appear to be off campus</strong><br><small>${Math.round(distance)}m from ${campus.name || 'campus'} (max: ${campus.radius||DEFAULT_CAMPUS.radius}m)</small>`;
+      resultAct.innerHTML  = `<button class="btn-secondary" style="background:rgba(244,112,58,.15);color:var(--orange);border-color:var(--orange)"
+                                onclick="proceedClockIn(true)"><i class="fa fa-triangle-exclamation"></i> Clock In Anyway (flagged)</button>
+                               <button class="btn-secondary" onclick="closeLocationPanel()">Cancel</button>`;
+    }
+  } else {
+    locationVerified = false;
+    if (verTitle) verTitle.textContent = 'Verification Incomplete';
+    if (verSub)   verSub.textContent = 'GPS unavailable — clock-in will be marked for manual review';
+    if (result) {
+      result.style.display = 'block';
+      resultIcon.innerHTML = '<i class="fa fa-circle-question" style="font-size:2.5rem;color:var(--yellow)"></i>';
+      resultMsg.innerHTML  = '<strong>No GPS Signal</strong><br><small>Your attendance may need instructor confirmation</small>';
+      resultAct.innerHTML  = `<button class="btn-secondary" onclick="proceedClockIn(false, true)"><i class="fa fa-clock"></i> Clock In (Manual Review)</button>
+                               <button class="btn-secondary" onclick="closeLocationPanel()">Cancel</button>`;
+    }
+  }
+}
+
+function setLVC(key, value, state) {
+  const val = document.getElementById(`lvc-${key}-val`);
+  const st  = document.getElementById(`lvc-${key}-st`);
+  const row = document.getElementById(`lvc-${key}`);
+  if (val) val.textContent = value;
+  if (st) {
+    const icons = { ok: 'fa-circle-check', fail: 'fa-circle-xmark', warn: 'fa-triangle-exclamation' };
+    const colors = { ok: 'var(--green)', fail: 'var(--red)', warn: 'var(--yellow)' };
+    st.innerHTML = `<i class="fa ${icons[state]||'fa-circle-check'}" style="color:${colors[state]||colors.ok}"></i>`;
+  }
+  if (row) { row.classList.remove('check-ok','check-fail','check-warn'); row.classList.add(`check-${state}`); }
+}
+
+// ── Proceed after verification ────────────────────────
+function proceedClockIn(flagged = false, manual = false) {
+  closeLocationPanel();
+  doClockIn(flagged, manual);
+}
+
 function handleClock() {
-  const btn = document.getElementById('clockBtn');
-  const icon = document.getElementById('clockIcon');
-  const btnText = document.getElementById('clockBtnText');
+  if (!isClockedIn) {
+    // Show verification panel before clocking in
+    openLocationPanel();
+  } else {
+    doClockOut();
+  }
+}
+
+function doClockIn(flagged = false, manual = false) {
+  const btn       = document.getElementById('clockBtn');
+  const icon      = document.getElementById('clockIcon');
+  const btnText   = document.getElementById('clockBtnText');
   const statusDot = document.querySelector('.status-dot');
   const statusText = document.getElementById('clockStatusText');
-  const badge = document.getElementById('statusBadge');
-  const log = document.getElementById('todayLog');
+  const badge     = document.getElementById('statusBadge');
+  const log       = document.getElementById('todayLog');
 
-  if (!isClockedIn) {
-    // CLOCK IN
-    isClockedIn = true;
-    clockInTime = new Date();
-    const timeStr = clockInTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  isClockedIn  = true;
+  clockInTime  = new Date();
+  const timeStr = clockInTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
 
-    btn.className = 'btn-clock btn-clockout';
-    icon.className = 'fa fa-stop';
-    btnText.textContent = 'Clock Out';
-    statusDot.className = 'status-dot dot-active';
-    statusText.textContent = 'Clocked In';
-    if (badge) badge.innerHTML = '<span class="badge badge-present">● Clocked In</span>';
+  if (btn)        btn.className = 'btn-clock btn-clockout';
+  if (icon)       icon.className = 'fa fa-stop';
+  if (btnText)    btnText.textContent = 'Clock Out';
+  if (statusDot)  statusDot.className = 'status-dot dot-active';
+  if (statusText) statusText.textContent = 'Clocked In';
+  if (badge)      badge.innerHTML = '<span class="badge badge-present">● Clocked In</span>';
 
-    // Add to timeline
-    if (log) {
-      log.innerHTML = `
-        <div class="timeline-item">
-          <div class="tl-icon"><i class="fa fa-play"></i></div>
-          <div class="tl-info">
-            <div class="tl-label">Clocked In</div>
-            <div class="tl-time">${timeStr}</div>
-            <div class="tl-loc"><i class="fa fa-location-dot"></i> ${gpsCoords ? `${gpsCoords.latitude.toFixed(4)}, ${gpsCoords.longitude.toFixed(4)}` : 'Location captured'}</div>
-          </div>
-        </div>`;
-    }
-    showToast('✓ Clocked in at ' + timeStr, 'green');
-  } else {
-    // CLOCK OUT
-    isClockedIn = false;
-    const outTime = new Date();
-    const timeStr = outTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-    const diff = Math.round((outTime - clockInTime) / 60000);
-    const hrs = Math.floor(diff / 60), mins = diff % 60;
+  // Show verify badge in activity section
+  const vBadge = document.getElementById('verifyBadge');
+  if (vBadge) {
+    vBadge.style.display = 'inline-flex';
+    if (flagged)      { vBadge.innerHTML = '<i class="fa fa-triangle-exclamation"></i> Location Flagged'; vBadge.style.background = 'rgba(244,112,58,.15)'; vBadge.style.color = 'var(--orange)'; }
+    else if (manual)  { vBadge.innerHTML = '<i class="fa fa-clock"></i> Manual Review'; vBadge.style.background = 'rgba(245,158,11,.15)'; vBadge.style.color = 'var(--yellow)'; }
+    else              { vBadge.innerHTML = '<i class="fa fa-shield-halved"></i> Location Verified ✓'; }
+  }
 
-    btn.className = 'btn-clock btn-clockin';
-    icon.className = 'fa fa-play';
-    btnText.textContent = 'Clock In';
-    statusDot.className = 'status-dot dot-out';
-    statusText.textContent = 'Shift Complete';
-    if (badge) badge.innerHTML = '<span class="badge badge-late">Clocked Out</span>';
+  const verStatus = flagged ? '⚠ Outside geofence' : manual ? '⏳ No GPS — manual review' : `✓ Verified (${gpsCoords ? Math.round(haversine(gpsCoords.latitude, gpsCoords.longitude, (geoConfig||DEFAULT_CAMPUS).lat, (geoConfig||DEFAULT_CAMPUS).lon))+'m' : 'GPS'})`;
+  const locLabel  = gpsCoords ? `${gpsCoords.latitude.toFixed(4)}, ${gpsCoords.longitude.toFixed(4)}` : 'No GPS';
 
-    const clockInStr = clockInTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
-
-    if (log) {
-      log.innerHTML = `
-        <div class="timeline-item">
-          <div class="tl-icon"><i class="fa fa-play"></i></div>
-          <div class="tl-info">
-            <div class="tl-label">Clocked In</div>
-            <div class="tl-time">${clockInStr}</div>
-            <div class="tl-loc"><i class="fa fa-location-dot"></i> ${gpsCoords ? `${gpsCoords.latitude.toFixed(4)}, ${gpsCoords.longitude.toFixed(4)}` : 'Location captured'}</div>
+  if (log) {
+    log.innerHTML = `
+      <div class="timeline-item ${flagged?'tl-flagged':''}">
+        <div class="tl-icon ${flagged?'tl-icon-warn':''}" style="${flagged?'background:rgba(244,112,58,.12);color:var(--orange)':''}">
+          <i class="fa fa-play"></i>
+        </div>
+        <div class="tl-info">
+          <div class="tl-label">Clocked In ${flagged?'<span class="tl-flag-tag">Flagged</span>':''}</div>
+          <div class="tl-time">${timeStr}</div>
+          <div class="tl-loc"><i class="fa fa-location-dot"></i> ${locLabel}</div>
+          <div class="tl-loc" style="color:${flagged?'var(--orange)':manual?'var(--yellow)':'var(--green)'}">
+            <i class="fa fa-shield-halved"></i> ${verStatus}
           </div>
         </div>
-        <div class="timeline-item" style="border-left-color:var(--orange)">
-          <div class="tl-icon" style="background:rgba(244,112,58,.1);color:var(--orange)"><i class="fa fa-stop"></i></div>
-          <div class="tl-info">
-            <div class="tl-label">Clocked Out</div>
-            <div class="tl-time">${timeStr}</div>
-            <div class="tl-loc"><i class="fa fa-clock"></i> Total: ${hrs}h ${mins}m</div>
-          </div>
-        </div>`;
-    }
-    showToast(`✓ Clocked out — ${hrs}h ${mins}m today`, 'orange');
+      </div>`;
   }
+
+  // Log verification to audit array
+  verificationLog.push({
+    type: 'clock_in', time: clockInTime.toISOString(),
+    coords: gpsCoords ? { lat: gpsCoords.latitude, lon: gpsCoords.longitude, accuracy: gpsCoords.accuracy } : null,
+    verified: !flagged && !manual, flagged, manual
+  });
+
+  showToast(flagged ? '⚠ Clocked in — location flagged' : '✓ Clocked in at ' + timeStr, flagged ? 'orange' : 'green');
+}
+
+function doClockOut() {
+  const btn       = document.getElementById('clockBtn');
+  const icon      = document.getElementById('clockIcon');
+  const btnText   = document.getElementById('clockBtnText');
+  const statusDot = document.querySelector('.status-dot');
+  const statusText = document.getElementById('clockStatusText');
+  const badge     = document.getElementById('statusBadge');
+  const log       = document.getElementById('todayLog');
+
+  isClockedIn = false;
+  const outTime = new Date();
+  const timeStr = outTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const diff    = Math.round((outTime - clockInTime) / 60000);
+  const hrs     = Math.floor(diff / 60), mins = diff % 60;
+  const clockInStr = clockInTime.toLocaleTimeString('en-US', { hour: '2-digit', minute: '2-digit' });
+  const locLabel   = gpsCoords ? `${gpsCoords.latitude.toFixed(4)}, ${gpsCoords.longitude.toFixed(4)}` : 'No GPS';
+
+  if (btn)        btn.className = 'btn-clock btn-clockin';
+  if (icon)       icon.className = 'fa fa-play';
+  if (btnText)    btnText.textContent = 'Clock In';
+  if (statusDot)  statusDot.className = 'status-dot dot-out';
+  if (statusText) statusText.textContent = 'Shift Complete';
+  if (badge)      badge.innerHTML = '<span class="badge badge-late">Clocked Out</span>';
+
+  if (log) {
+    const existingIn = log.querySelector('.timeline-item') ? log.innerHTML : '';
+    const inHtml = existingIn || `
+      <div class="timeline-item">
+        <div class="tl-icon"><i class="fa fa-play"></i></div>
+        <div class="tl-info">
+          <div class="tl-label">Clocked In</div>
+          <div class="tl-time">${clockInStr}</div>
+          <div class="tl-loc"><i class="fa fa-location-dot"></i> ${locLabel}</div>
+        </div>
+      </div>`;
+    log.innerHTML = inHtml + `
+      <div class="timeline-item" style="border-left-color:var(--orange)">
+        <div class="tl-icon" style="background:rgba(244,112,58,.1);color:var(--orange)"><i class="fa fa-stop"></i></div>
+        <div class="tl-info">
+          <div class="tl-label">Clocked Out</div>
+          <div class="tl-time">${timeStr}</div>
+          <div class="tl-loc"><i class="fa fa-location-dot"></i> ${locLabel}</div>
+          <div class="tl-loc"><i class="fa fa-clock"></i> Total: ${hrs}h ${mins}m</div>
+        </div>
+      </div>`;
+  }
+
+  verificationLog.push({
+    type: 'clock_out', time: outTime.toISOString(),
+    coords: gpsCoords ? { lat: gpsCoords.latitude, lon: gpsCoords.longitude } : null,
+    hours: hrs + (mins/60)
+  });
+
+  showToast(`✓ Clocked out — ${hrs}h ${mins}m today`, 'orange');
 }
 
 /* ── INSTRUCTOR ─────────────────────────────────── */
@@ -482,6 +866,350 @@ function loadDate(v)        { showToast('Loading attendance for ' + v, 'blue'); 
 function updateChart(v)     { showToast('Chart updated: ' + v, 'purple'); }
 function updateReportFields(v) { }
 function filterRecords(v)   { }
+
+/* ══════════════════════════════════════════════════════
+   GEOFENCE ADMIN PANEL — saveGeofence, map, audit log
+   ══════════════════════════════════════════════════════ */
+
+// ── Local config store (mirrors server) ──────────────
+let localGeoConfig = null;
+let geoMap = null;   // Leaflet map instance
+let campusMarker = null, radiusCircle = null;
+
+// ── Initialise admin geofence page ───────────────────
+async function initGeofencePage() {
+  if (!document.getElementById('geoMap')) return;
+
+  // Load config
+  try {
+    const res = await fetch('/api/location/config');
+    if (res.ok) localGeoConfig = await res.json();
+  } catch { /* use defaults */ }
+  if (!localGeoConfig) localGeoConfig = { ...DEFAULT_CAMPUS, wifi_networks: ['CodeDifferently-WiFi','CD-Staff','CD-Students'] };
+
+  // Populate form
+  const n = document.getElementById('geoName');
+  const la = document.getElementById('geoLat');
+  const lo = document.getElementById('geoLon');
+  const ra = document.getElementById('geoRadius');
+  const rd = document.getElementById('radiusDisplay');
+  const ac = document.getElementById('geoAccuracy');
+  const ad = document.getElementById('accuracyDisplay');
+  const wi = document.getElementById('geoWifi');
+  if (n)  n.value  = localGeoConfig.name || 'Code Differently Campus';
+  if (la) la.value = (localGeoConfig.lat || localGeoConfig.latitude  || DEFAULT_CAMPUS.lat).toFixed(4);
+  if (lo) lo.value = (localGeoConfig.lon || localGeoConfig.longitude || DEFAULT_CAMPUS.lon).toFixed(4);
+  if (ra) { ra.value = localGeoConfig.radius || 60; if (rd) rd.textContent = ra.value; }
+  if (ac) { ac.value = localGeoConfig.max_accuracy || 40; if (ad) ad.textContent = ac.value; }
+  if (wi && localGeoConfig.wifi_networks) wi.value = localGeoConfig.wifi_networks.join('\n');
+
+  // Update status bar
+  const sdv = document.getElementById('geoStatusDistVal');
+  const swv = document.getElementById('geoStatusWifiVal');
+  const su  = document.getElementById('geoStatusUpdated');
+  if (sdv) sdv.textContent = `Radius: ${localGeoConfig.radius || 60}m`;
+  if (swv) swv.textContent = `WiFi Networks: ${(localGeoConfig.wifi_networks||[]).length}`;
+  if (su)  su.textContent  = 'Last saved: just now';
+
+  // Load Leaflet and init map
+  loadLeaflet(initLeafletMap);
+  loadAuditLog();
+}
+
+function loadLeaflet(cb) {
+  if (window.L) { cb(); return; }
+  // Load Leaflet CSS
+  const css = document.createElement('link');
+  css.rel = 'stylesheet';
+  css.href = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.css';
+  document.head.appendChild(css);
+  // Load Leaflet JS
+  const js = document.createElement('script');
+  js.src = 'https://cdn.jsdelivr.net/npm/leaflet@1.9.4/dist/leaflet.min.js';
+  js.onload = cb;
+  document.head.appendChild(js);
+}
+
+function initLeafletMap() {
+  const mapEl = document.getElementById('geoMap');
+  if (!mapEl || !window.L) return;
+
+  // Remove loading overlay
+  const loading = document.getElementById('geoMapLoading');
+  if (loading) loading.style.display = 'none';
+
+  const clat = parseFloat(document.getElementById('geoLat')?.value) || DEFAULT_CAMPUS.lat;
+  const clon = parseFloat(document.getElementById('geoLon')?.value) || DEFAULT_CAMPUS.lon;
+  const rad  = parseInt(document.getElementById('geoRadius')?.value) || 60;
+
+  // Init map
+  geoMap = L.map('geoMap', { zoomControl: true, attributionControl: false }).setView([clat, clon], 16);
+
+  // Dark tile layer
+  L.tileLayer('https://{s}.basemaps.cartocdn.com/dark_all/{z}/{x}/{y}{r}.png', {
+    maxZoom: 19, attribution: '©OpenStreetMap ©CartoDB'
+  }).addTo(geoMap);
+
+  // Custom campus icon
+  const campusIcon = L.divIcon({
+    html: `<div style="background:linear-gradient(135deg,#F4703A,#9B3DE8);width:36px;height:36px;border-radius:50% 50% 50% 0;transform:rotate(-45deg);border:3px solid white;box-shadow:0 3px 12px rgba(0,0,0,.4)">
+             <span style="display:block;transform:rotate(45deg);text-align:center;line-height:30px;color:white;font-weight:bold;font-size:13px">CD</span>
+           </div>`,
+    iconSize: [36, 36], iconAnchor: [18, 36], className: ''
+  });
+
+  campusMarker = L.marker([clat, clon], { icon: campusIcon, draggable: true }).addTo(geoMap);
+  campusMarker.bindPopup(`<b>Code Differently Campus</b><br>${clat.toFixed(5)}, ${clon.toFixed(5)}`).openPopup();
+
+  // Draggable marker updates form
+  campusMarker.on('dragend', (e) => {
+    const pos = e.target.getLatLng();
+    document.getElementById('geoLat').value = pos.lat.toFixed(5);
+    document.getElementById('geoLon').value = pos.lng.toFixed(5);
+    campusMarker.getPopup().setContent(`<b>Code Differently Campus</b><br>${pos.lat.toFixed(5)}, ${pos.lng.toFixed(5)}`);
+    updateRadiusCircle(pos.lat, pos.lng);
+    showToast('Pin moved — remember to save', 'orange');
+  });
+
+  // Radius circle
+  radiusCircle = L.circle([clat, clon], {
+    radius: rad, color: '#9B3DE8', fillColor: '#9B3DE8', fillOpacity: 0.12, weight: 2, dashArray: '6 4'
+  }).addTo(geoMap);
+
+  // Click on map to move pin
+  geoMap.on('click', (e) => {
+    const { lat, lng } = e.latlng;
+    campusMarker.setLatLng([lat, lng]);
+    document.getElementById('geoLat').value = lat.toFixed(5);
+    document.getElementById('geoLon').value = lng.toFixed(5);
+    updateRadiusCircle(lat, lng);
+    showToast(`Pin placed at ${lat.toFixed(4)}, ${lng.toFixed(4)}`, 'purple');
+  });
+
+  // Sync radius slider to circle
+  const slider = document.getElementById('geoRadius');
+  if (slider) {
+    slider.addEventListener('input', () => {
+      const pos = campusMarker.getLatLng();
+      updateRadiusCircle(pos.lat, pos.lng, parseInt(slider.value));
+    });
+  }
+}
+
+function updateRadiusCircle(lat, lng, rad) {
+  if (!radiusCircle) return;
+  if (!rad) rad = parseInt(document.getElementById('geoRadius')?.value) || 60;
+  radiusCircle.setLatLng([lat, lng]);
+  radiusCircle.setRadius(rad);
+}
+
+// ── Drop pin at current user location ────────────────
+function dropPinHere() {
+  if (!geoMap || !campusMarker) { showToast('Map not loaded yet', 'orange'); return; }
+  if (!navigator.geolocation) { showToast('GPS not supported', 'orange'); return; }
+  showToast('Getting your location…', 'purple');
+  navigator.geolocation.getCurrentPosition((pos) => {
+    const lat = pos.coords.latitude, lng = pos.coords.longitude;
+    campusMarker.setLatLng([lat, lng]);
+    geoMap.setView([lat, lng], 17);
+    document.getElementById('geoLat').value = lat.toFixed(5);
+    document.getElementById('geoLon').value = lng.toFixed(5);
+    updateRadiusCircle(lat, lng);
+    showToast(`Pin dropped at your location (±${Math.round(pos.coords.accuracy)}m)`, 'green');
+  }, () => showToast('Could not get GPS location', 'orange'), { enableHighAccuracy: true });
+}
+
+function useMyLocation() { dropPinHere(); }
+
+// ── Apply radius preset ───────────────────────────────
+function applyPreset(metres) {
+  const r = document.getElementById('geoRadius');
+  const d = document.getElementById('radiusDisplay');
+  if (r) r.value = metres;
+  if (d) d.textContent = metres;
+  // Update active button styling
+  document.querySelectorAll('.btn-preset').forEach(b => b.classList.remove('active'));
+  event.target.classList.add('active');
+  if (campusMarker) {
+    const pos = campusMarker.getLatLng();
+    updateRadiusCircle(pos.lat, pos.lng, metres);
+  }
+  showToast(`Radius set to ${metres}m`, 'purple');
+}
+
+// ── Save geofence configuration ───────────────────────
+async function saveGeofence() {
+  const name   = document.getElementById('geoName')?.value?.trim() || 'Code Differently Campus';
+  const lat    = parseFloat(document.getElementById('geoLat')?.value)    || DEFAULT_CAMPUS.lat;
+  const lon    = parseFloat(document.getElementById('geoLon')?.value)    || DEFAULT_CAMPUS.lon;
+  const radius = parseInt(document.getElementById('geoRadius')?.value)   || 60;
+  const maxAcc = parseInt(document.getElementById('geoAccuracy')?.value) || 40;
+  const wifiRaw = document.getElementById('geoWifi')?.value || '';
+  const wifi   = wifiRaw.split('\n').map(s => s.trim()).filter(Boolean);
+
+  showToast('Saving geofence configuration…', 'purple');
+
+  try {
+    const res = await fetch('/api/location/config', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, lat, lon, longitude: lon, latitude: lat, radius, max_accuracy: maxAcc, wifi_networks: wifi })
+    });
+    if (res.ok) {
+      localGeoConfig = await res.json();
+      const su = document.getElementById('geoStatusUpdated');
+      const sd = document.getElementById('geoStatusDistVal');
+      if (su) su.textContent = 'Last saved: just now';
+      if (sd) sd.textContent = `Radius: ${radius}m`;
+      showToast(`✓ Geofence saved — ${name}, ${radius}m radius`, 'green');
+    } else {
+      showToast('Server error — changes saved locally', 'orange');
+    }
+  } catch {
+    showToast('Network error — changes saved locally only', 'orange');
+  }
+}
+
+// ── Test current location against geofence ────────────
+function testCurrentLocation() {
+  const checks = document.getElementById('geoTestChecks');
+  const result = document.getElementById('geoTestResult');
+  if (checks) checks.style.display = 'grid';
+  if (result) result.style.display = 'none';
+
+  // Reset spinners
+  ['gps','dist','acc','wifi'].forEach(k => {
+    const v = document.getElementById(`gtc-${k}-val`);
+    const ic = document.getElementById(`gtc-${k}-ic`);
+    if (v)  v.textContent = '—';
+    if (ic) ic.style.display = 'inline';
+  });
+
+  if (!navigator.geolocation) {
+    setGTC('gps', 'Not supported', false);
+    setGTC('dist', '—', false);
+    setGTC('acc', '—', false);
+    setGTC('wifi', '—', null);
+    return;
+  }
+
+  navigator.geolocation.getCurrentPosition(async (pos) => {
+    const lat    = pos.coords.latitude, lon = pos.coords.longitude;
+    const campus = {
+      lat: parseFloat(document.getElementById('geoLat')?.value) || DEFAULT_CAMPUS.lat,
+      lon: parseFloat(document.getElementById('geoLon')?.value) || DEFAULT_CAMPUS.lon,
+      radius: parseInt(document.getElementById('geoRadius')?.value) || 60
+    };
+    const dist   = haversine(lat, lon, campus.lat, campus.lon);
+    const inside = dist <= campus.radius;
+    const maxAcc = parseInt(document.getElementById('geoAccuracy')?.value) || 40;
+
+    setGTC('gps',  `${lat.toFixed(5)}, ${lon.toFixed(5)}`, true);
+    await new Promise(r => setTimeout(r, 400));
+    setGTC('dist', `${Math.round(dist)}m (${inside?'inside':'outside'} ${campus.radius}m zone)`, inside);
+    await new Promise(r => setTimeout(r, 300));
+    setGTC('acc',  `±${Math.round(pos.coords.accuracy)}m (max ${maxAcc}m)`, pos.coords.accuracy <= maxAcc);
+    await new Promise(r => setTimeout(r, 300));
+    setGTC('wifi', 'Cannot detect via browser — GPS used', null);
+
+    // Show result card
+    if (result) {
+      result.style.display = 'block';
+      result.className = inside ? 'geo-test-success' : 'geo-test-fail';
+      result.innerHTML = inside
+        ? `<i class="fa fa-circle-check" style="font-size:2rem;color:var(--green)"></i>
+           <p><strong>Inside Geofence ✓</strong><br>${Math.round(dist)}m from campus</p>`
+        : `<i class="fa fa-triangle-exclamation" style="font-size:2rem;color:var(--orange)"></i>
+           <p><strong>Outside Geofence ⚠</strong><br>${Math.round(dist)}m — ${Math.round(dist-campus.radius)}m over limit</p>`;
+    }
+    if (checks) checks.style.display = 'none';
+  }, () => {
+    setGTC('gps', 'GPS denied', false);
+    setGTC('dist', '—', false);
+    setGTC('acc', '—', false);
+    setGTC('wifi', '—', null);
+  }, { enableHighAccuracy: true, timeout: 12000 });
+}
+
+function setGTC(key, val, ok) {
+  const v  = document.getElementById(`gtc-${key}-val`);
+  const ic = document.getElementById(`gtc-${key}-ic`);
+  const row = document.getElementById(`gtc-${key}`);
+  if (v)  v.textContent = val;
+  if (ic) ic.style.display = 'none';
+  if (row) {
+    row.classList.remove('gtc-ok','gtc-fail','gtc-na');
+    if (ok === true)  row.classList.add('gtc-ok');
+    else if (ok === false) row.classList.add('gtc-fail');
+    else                   row.classList.add('gtc-na');
+  }
+}
+
+// ── Audit Log ─────────────────────────────────────────
+const SAMPLE_AUDIT = [
+  { student_id:'EMP001', name:'Alex Johnson',    time:'09:02 AM', distance:12, accuracy:8,  wifi:'CodeDifferently-WiFi', status:'full',    note:'Verified on campus' },
+  { student_id:'EMP002', name:'Maria Garcia',    time:'09:14 AM', distance:28, accuracy:15, wifi:'CodeDifferently-WiFi', status:'full',    note:'Late — within fence' },
+  { student_id:'EMP003', name:'DeShawn Williams',time:'09:01 AM', distance:5,  accuracy:4,  wifi:'CD-Staff',             status:'full',    note:'Excellent signal' },
+  { student_id:'EMP004', name:'Priya Patel',     time:'—',        distance:null, accuracy:null, wifi:'None',             status:'failed',  note:'No clock-in recorded' },
+  { student_id:'EMP005', name:'Liam Chen',       time:'08:58 AM', distance:45, accuracy:22, wifi:'None',                 status:'partial', note:'GPS partial — inside fence' },
+  { student_id:'EMP006', name:'Aaliyah Brown',   time:'09:22 AM', distance:72, accuracy:35, wifi:'None',                 status:'failed',  note:'Outside geofence — flagged' },
+  { student_id:'EMP007', name:'Marcus Thompson', time:'09:00 AM', distance:18, accuracy:9,  wifi:'CodeDifferently-WiFi', status:'full',    note:'Verified on campus' },
+  { student_id:'EMP008', name:'Sofia Rodriguez', time:'—',        distance:null, accuracy:null, wifi:'None',             status:'failed',  note:'Absent — no location data' },
+];
+
+let currentAuditFilter = '';
+
+function loadAuditLog(filter) {
+  currentAuditFilter = filter || currentAuditFilter;
+  const tbody = document.getElementById('auditTableBody');
+  if (!tbody) return;
+
+  const data = currentAuditFilter
+    ? SAMPLE_AUDIT.filter(r => r.student_id === currentAuditFilter)
+    : SAMPLE_AUDIT;
+
+  // Update stats
+  const full    = data.filter(r => r.status === 'full').length;
+  const partial = data.filter(r => r.status === 'partial').length;
+  const failed  = data.filter(r => r.status === 'failed').length;
+  const dists   = data.filter(r => r.distance !== null).map(r => r.distance);
+  const avgDist = dists.length ? Math.round(dists.reduce((a,b)=>a+b,0)/dists.length) : null;
+  const sf = document.getElementById('ast-full');
+  const sp = document.getElementById('ast-partial');
+  const sr = document.getElementById('ast-failed');
+  const sa = document.getElementById('ast-avg');
+  if (sf) sf.textContent = full;
+  if (sp) sp.textContent = partial;
+  if (sr) sr.textContent = failed;
+  if (sa) sa.textContent = avgDist !== null ? avgDist + 'm' : '—';
+
+  // Build rows
+  tbody.innerHTML = data.map(r => {
+    const statusBadge = {
+      full:    '<span class="audit-badge full"><i class="fa fa-circle-check"></i> Full</span>',
+      partial: '<span class="audit-badge partial"><i class="fa fa-triangle-exclamation"></i> Partial</span>',
+      failed:  '<span class="audit-badge failed"><i class="fa fa-circle-xmark"></i> Failed</span>',
+    }[r.status] || '';
+    return `<tr>
+      <td><span class="student-id-chip">${r.student_id}</span> ${r.name}</td>
+      <td>${r.time}</td>
+      <td>${r.distance !== null ? r.distance + 'm' : '—'}</td>
+      <td>${r.accuracy !== null ? '±'+r.accuracy+'m' : '—'}</td>
+      <td><span class="${r.wifi!=='None'?'wifi-ok':'wifi-none'}">${r.wifi}</span></td>
+      <td>${statusBadge}</td>
+      <td style="color:var(--gray400);font-size:.82rem">${r.note}</td>
+    </tr>`;
+  }).join('');
+}
+
+function filterAuditLog(val) { loadAuditLog(val); }
+
+// Auto-init geofence page
+if (document.getElementById('geoMap')) {
+  window.addEventListener('DOMContentLoaded', initGeofencePage);
+  // Also try immediately (in case DOM already loaded)
+  if (document.readyState !== 'loading') initGeofencePage();
+}
 
 /* ── TOAST HELPER ────────────────────────────────── */
 let toastTimer = null;

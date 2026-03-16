@@ -1,6 +1,14 @@
 import { Hono } from 'hono'
 import { cors } from 'hono/cors'
 import { serveStatic } from 'hono/cloudflare-workers'
+import {
+  verifyLocation,
+  getSchoolConfig,
+  setSchoolConfig,
+  getVerifications,
+  getVerificationStats,
+  haversineDistance,
+} from './location-service'
 
 type Bindings = {
   OPENAI_API_KEY: string
@@ -21,6 +29,140 @@ app.get('/admin', (c) => c.html(adminPage()))
 app.get('/profile', (c) => c.html(profilePage()))
 app.get('/reports', (c) => c.html(reportsPage()))
 app.get('/settings', (c) => c.html(settingsPage()))
+app.get('/geofence', (c) => c.html(geofencePage()))
+
+// ═══════════════════════════════════════════════════════════════════
+// LOCATION VERIFICATION API  (Enhancement Layer — non-destructive)
+// ═══════════════════════════════════════════════════════════════════
+
+// ── POST /api/location/verify ────────────────────────────────────────
+// The interception layer: called by student BEFORE attendance is recorded.
+// Returns {allowed, status, distance, message, verification_id}
+app.post('/api/location/verify', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      student_id: string
+      session_id: string
+      latitude: number
+      longitude: number
+      accuracy: number
+      wifi_ssid?: string | null
+    }
+
+    // Validate required fields
+    if (
+      typeof body.latitude  !== 'number' ||
+      typeof body.longitude !== 'number' ||
+      typeof body.accuracy  !== 'number'
+    ) {
+      return c.json({ allowed: false, error: 'Missing or invalid GPS coordinates' }, 400)
+    }
+
+    const result = verifyLocation({
+      student_id:  body.student_id  || 'anonymous',
+      session_id:  body.session_id  || 'session-' + Date.now(),
+      latitude:    body.latitude,
+      longitude:   body.longitude,
+      accuracy:    body.accuracy,
+      wifi_ssid:   body.wifi_ssid   || null,
+    })
+
+    return c.json({
+      allowed:              result.allowed,
+      status:               result.status,
+      distance_from_school: result.distance_from_school,
+      gps_verified:         result.gps_verified,
+      wifi_verified:        result.wifi_verified,
+      rejection_reason:     result.rejection_reason,
+      verification_id:      result.verification_id,
+      school_name:          result.school_name,
+      message:              result.message,
+      school_config: {
+        radius:    getSchoolConfig().radius,
+        latitude:  getSchoolConfig().latitude,
+        longitude: getSchoolConfig().longitude,
+      },
+    })
+  } catch (err: any) {
+    return c.json({ allowed: false, error: err.message }, 500)
+  }
+})
+
+// ── GET /api/location/config ─────────────────────────────────────────
+// Returns current geofence configuration (safe for client — no secrets)
+app.get('/api/location/config', (c) => {
+  const cfg = getSchoolConfig()
+  return c.json({
+    id:                    cfg.id,
+    name:                  cfg.name,
+    latitude:              cfg.latitude,
+    longitude:             cfg.longitude,
+    radius:                cfg.radius,
+    max_accuracy:          cfg.max_accuracy,
+    allowed_wifi_networks: cfg.allowed_wifi_networks,
+    updated_at:            cfg.updated_at,
+  })
+})
+
+// ── POST /api/location/config ────────────────────────────────────────
+// Admin-only: update the geofence configuration
+app.post('/api/location/config', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      name: string
+      latitude: number
+      longitude: number
+      radius: number
+      max_accuracy?: number
+      allowed_wifi_networks?: string[]
+    }
+
+    if (!body.name || typeof body.latitude !== 'number' || typeof body.longitude !== 'number') {
+      return c.json({ success: false, error: 'name, latitude, and longitude are required' }, 400)
+    }
+
+    const updated = setSchoolConfig({
+      name:                  body.name,
+      latitude:              body.latitude,
+      longitude:             body.longitude,
+      radius:                body.radius || 60,
+      max_accuracy:          body.max_accuracy || 40,
+      allowed_wifi_networks: body.allowed_wifi_networks || [],
+    })
+
+    return c.json({ success: true, config: updated })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500)
+  }
+})
+
+// ── GET /api/location/verifications ──────────────────────────────────
+// Admin/Instructor: audit trail of all verification attempts
+app.get('/api/location/verifications', (c) => {
+  const studentId = c.req.query('student_id') || undefined
+  const limit     = parseInt(c.req.query('limit') || '50')
+  const records   = getVerifications(studentId, limit)
+  const stats     = getVerificationStats()
+  return c.json({ stats, records })
+})
+
+// ── GET /api/location/distance ────────────────────────────────────────
+// Utility: calculate distance from a point to the configured school
+app.get('/api/location/distance', (c) => {
+  const lat = parseFloat(c.req.query('lat') || '')
+  const lon = parseFloat(c.req.query('lon') || '')
+  if (isNaN(lat) || isNaN(lon)) {
+    return c.json({ error: 'lat and lon query params required' }, 400)
+  }
+  const school   = getSchoolConfig()
+  const distance = haversineDistance(lat, lon, school.latitude, school.longitude)
+  return c.json({
+    distance_meters: Math.round(distance),
+    inside_geofence: distance <= school.radius,
+    radius:          school.radius,
+    school:          school.name,
+  })
+})
 
 // ═══════════════════════════════════════════════════════════════════
 // AI + QUICKBOOKS API ROUTES
@@ -334,6 +476,7 @@ function shell(title: string, body: string, role: string = ''): string {
       ${role === 'admin' ? `<a href="/admin" class="nav-link"><i class="fa fa-gauge"></i> Dashboard</a>
         <a href="/instructor" class="nav-link"><i class="fa fa-list-check"></i> Attendance</a>
         <a href="/reports" class="nav-link"><i class="fa fa-chart-bar"></i> Reports</a>
+        <a href="/geofence" class="nav-link"><i class="fa fa-map-location-dot"></i> Geofence</a>
         <a href="/settings" class="nav-link"><i class="fa fa-gear"></i> Settings</a>` : ''}
       <a href="/login" class="nav-link nav-logout"><i class="fa fa-right-from-bracket"></i> Logout</a>
     </div>
@@ -347,6 +490,7 @@ function shell(title: string, body: string, role: string = ''): string {
     ${role === 'admin' ? `<a href="/admin"><i class="fa fa-gauge"></i> Dashboard</a>
       <a href="/instructor"><i class="fa fa-list-check"></i> Attendance</a>
       <a href="/reports"><i class="fa fa-chart-bar"></i> Reports</a>
+      <a href="/geofence"><i class="fa fa-map-location-dot"></i> Geofence</a>
       <a href="/settings"><i class="fa fa-gear"></i> Settings</a>` : ''}
     <a href="/login"><i class="fa fa-right-from-bracket"></i> Logout</a>
   </div>` : ''
@@ -422,7 +566,7 @@ function loginPage(): string {
 }
 
 // ═══════════════════════════════════════════════════════════════════
-// STUDENT CLOCK-IN PAGE
+// STUDENT CLOCK-IN PAGE  (Enhanced with Location Verification)
 // ═══════════════════════════════════════════════════════════════════
 function studentPage(): string {
   const body = `
@@ -436,7 +580,75 @@ function studentPage(): string {
   </div>
 </div>
 
-<!-- Clock Widget -->
+<!-- ── Geofence Proximity Banner ─────────────────────────────── -->
+<div class="geo-banner" id="geoBanner" style="display:none">
+  <div class="geo-banner-inner">
+    <div class="geo-pulse" id="geoPulse"></div>
+    <div class="geo-banner-text">
+      <strong id="geoBannerTitle">Checking location…</strong>
+      <span id="geoBannerSub"></span>
+    </div>
+    <div class="geo-banner-badge" id="geoBannerBadge"></div>
+  </div>
+  <div class="geo-distance-bar">
+    <div class="geo-distance-fill" id="geoDistanceFill" style="width:0%"></div>
+  </div>
+</div>
+
+<!-- ── Location Verification Panel (shows on clock-in attempt) ── -->
+<div class="location-verify-panel" id="locationPanel" style="display:none">
+  <div class="lv-header">
+    <i class="fa fa-shield-halved lv-shield" id="lvShield"></i>
+    <div>
+      <strong id="lvTitle">Verifying Location…</strong>
+      <p id="lvSub">Please wait</p>
+    </div>
+    <button class="lv-close" onclick="closeLocationPanel()"><i class="fa fa-xmark"></i></button>
+  </div>
+
+  <div class="lv-checks">
+    <div class="lv-check" id="lvc-gps">
+      <div class="lvc-icon"><i class="fa fa-satellite-dish"></i></div>
+      <div class="lvc-info">
+        <strong>GPS Position</strong>
+        <span id="lvc-gps-val">Acquiring…</span>
+      </div>
+      <div class="lvc-status" id="lvc-gps-st"><i class="fa fa-spinner fa-spin"></i></div>
+    </div>
+    <div class="lv-check" id="lvc-dist">
+      <div class="lvc-icon"><i class="fa fa-ruler"></i></div>
+      <div class="lvc-info">
+        <strong>Distance from Campus</strong>
+        <span id="lvc-dist-val">Calculating…</span>
+      </div>
+      <div class="lvc-status" id="lvc-dist-st"><i class="fa fa-spinner fa-spin"></i></div>
+    </div>
+    <div class="lv-check" id="lvc-acc">
+      <div class="lvc-icon"><i class="fa fa-crosshairs"></i></div>
+      <div class="lvc-info">
+        <strong>GPS Accuracy</strong>
+        <span id="lvc-acc-val">Checking…</span>
+      </div>
+      <div class="lvc-status" id="lvc-acc-st"><i class="fa fa-spinner fa-spin"></i></div>
+    </div>
+    <div class="lv-check" id="lvc-wifi">
+      <div class="lvc-icon"><i class="fa fa-wifi"></i></div>
+      <div class="lvc-info">
+        <strong>Campus WiFi</strong>
+        <span id="lvc-wifi-val">Scanning…</span>
+      </div>
+      <div class="lvc-status" id="lvc-wifi-st"><i class="fa fa-spinner fa-spin"></i></div>
+    </div>
+  </div>
+
+  <div class="lv-result" id="lvResult" style="display:none">
+    <div class="lv-result-icon" id="lvResultIcon"></div>
+    <div class="lv-result-message" id="lvResultMsg"></div>
+    <div class="lv-result-actions" id="lvResultActions"></div>
+  </div>
+</div>
+
+<!-- ── Clock Widget ───────────────────────────────────────────── -->
 <div class="clock-widget-wrap">
   <div class="clock-widget" id="clockWidget">
     <div class="clock-time" id="liveTime">00:00:00</div>
@@ -449,28 +661,55 @@ function studentPage(): string {
       <div class="status-dot dot-idle"></div>
       <span id="clockStatusText">Not Clocked In</span>
     </div>
-    <button class="btn-clock btn-clockin" id="clockBtn" onclick="handleClock()">
-      <i class="fa fa-play" id="clockIcon"></i>
-      <span id="clockBtnText">Clock In</span>
+    <!-- Clock button — disabled until GPS ready -->
+    <button class="btn-clock btn-clockin" id="clockBtn" onclick="handleClock()" disabled>
+      <i class="fa fa-location-dot" id="clockIcon"></i>
+      <span id="clockBtnText">Acquiring Location…</span>
     </button>
     <div class="gps-status" id="gpsStatus">
-      <i class="fa fa-location-dot"></i> <span id="gpsText">Acquiring location…</span>
+      <i class="fa fa-satellite-dish fa-spin"></i>
+      <span id="gpsText">Initializing GPS…</span>
     </div>
   </div>
 </div>
 
-<!-- Today's Log -->
-<div class="card mt-24">
+<!-- ── Map Mini Preview ───────────────────────────────────────── -->
+<div class="card mt-16" id="mapCard">
   <div class="card-header">
-    <h3><i class="fa fa-history"></i> Today's Activity</h3>
+    <h3><i class="fa fa-map-location-dot"></i> Campus Proximity Map</h3>
+    <span class="badge badge-ready" id="mapDistBadge">—</span>
   </div>
-  <div class="timeline" id="todayLog">
-    <div class="timeline-empty"><i class="fa fa-clock fa-2x"></i><p>No activity yet today</p></div>
+  <div id="miniMap" class="mini-map">
+    <div class="mini-map-placeholder">
+      <i class="fa fa-satellite-dish fa-spin"></i>
+      <p>Loading map…</p>
+    </div>
+  </div>
+  <div class="map-legend">
+    <span class="map-legend-item"><span class="map-dot campus"></span> Code Differently Campus</span>
+    <span class="map-legend-item"><span class="map-dot you"></span> Your Location</span>
+    <span class="map-legend-item"><span class="map-dot fence"></span> 60m Geofence</span>
   </div>
 </div>
 
-<!-- Weekly Summary -->
-<div class="grid-2 mt-24">
+<!-- ── Today's Activity Log ──────────────────────────────────── -->
+<div class="card mt-16">
+  <div class="card-header">
+    <h3><i class="fa fa-history"></i> Today's Activity</h3>
+    <span class="badge badge-ai" id="verifyBadge" style="display:none">
+      <i class="fa fa-shield-halved"></i> Location Verified
+    </span>
+  </div>
+  <div class="timeline" id="todayLog">
+    <div class="timeline-empty">
+      <i class="fa fa-clock fa-2x"></i>
+      <p>No activity yet today</p>
+    </div>
+  </div>
+</div>
+
+<!-- ── Weekly Summary ─────────────────────────────────────────── -->
+<div class="grid-2 mt-16">
   <div class="card">
     <div class="stat-icon-wrap purple"><i class="fa fa-clock"></i></div>
     <div class="stat-info">
@@ -1291,6 +1530,222 @@ function settingsPage(): string {
   <i class="fa fa-circle-check"></i> Settings saved successfully!
 </div>`
   return shell('Settings', body, 'admin')
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// GEOFENCE CONFIGURATION PAGE  (Admin Only)
+// ═══════════════════════════════════════════════════════════════════
+function geofencePage(): string {
+  const body = `
+<div class="page-header">
+  <div>
+    <h2><i class="fa fa-map-location-dot"></i> Geofence Configuration</h2>
+    <p class="page-sub">Define the official school location and attendance radius — Admin only</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn-secondary" onclick="testCurrentLocation()"><i class="fa fa-crosshairs"></i> Test My Location</button>
+    <button class="btn-primary" onclick="saveGeofence()"><i class="fa fa-save"></i> Save Geofence</button>
+  </div>
+</div>
+
+<!-- Status Bar -->
+<div class="geo-config-status" id="geoConfigStatus">
+  <div class="geo-status-item active">
+    <i class="fa fa-circle-check"></i>
+    <span>Geofence Active</span>
+  </div>
+  <div class="geo-status-item" id="geoStatusDist">
+    <i class="fa fa-ruler"></i>
+    <span id="geoStatusDistVal">Loading config…</span>
+  </div>
+  <div class="geo-status-item" id="geoStatusWifi">
+    <i class="fa fa-wifi"></i>
+    <span id="geoStatusWifiVal">—</span>
+  </div>
+  <div class="geo-status-item">
+    <i class="fa fa-clock"></i>
+    <span id="geoStatusUpdated">—</span>
+  </div>
+</div>
+
+<div class="geo-config-grid">
+  <!-- Left: Config Form -->
+  <div class="card geo-form-card">
+    <div class="card-header">
+      <h3><i class="fa fa-sliders"></i> Geofence Settings</h3>
+    </div>
+
+    <div class="geo-form">
+      <div class="form-group">
+        <label><i class="fa fa-school"></i> School / Campus Name</label>
+        <input type="text" id="geoName" class="form-control" value="Code Differently Campus"/>
+      </div>
+
+      <div class="geo-coord-row">
+        <div class="form-group">
+          <label><i class="fa fa-location-dot"></i> Latitude</label>
+          <input type="number" id="geoLat" class="form-control" value="39.7392" step="0.0001" min="-90" max="90"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-location-dot"></i> Longitude</label>
+          <input type="number" id="geoLon" class="form-control" value="-75.5398" step="0.0001" min="-180" max="180"/>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>
+          <i class="fa fa-circle-dot"></i>
+          Allowed Radius — <strong><span id="radiusDisplay">60</span> meters</strong>
+        </label>
+        <input type="range" id="geoRadius" class="geo-slider" min="20" max="200" value="60"
+          oninput="document.getElementById('radiusDisplay').textContent=this.value"/>
+        <div class="slider-labels">
+          <span>20m (tight)</span>
+          <span>100m</span>
+          <span>200m (loose)</span>
+        </div>
+      </div>
+
+      <div class="form-group">
+        <label>
+          <i class="fa fa-crosshairs"></i>
+          Max GPS Accuracy — <strong><span id="accuracyDisplay">40</span> meters</strong>
+        </label>
+        <input type="range" id="geoAccuracy" class="geo-slider" min="10" max="100" value="40"
+          oninput="document.getElementById('accuracyDisplay').textContent=this.value"/>
+        <div class="slider-labels"><span>10m (strict)</span><span>50m</span><span>100m (lenient)</span></div>
+      </div>
+
+      <div class="form-group">
+        <label><i class="fa fa-wifi"></i> Authorized WiFi Networks <span class="label-hint">(one per line)</span></label>
+        <textarea id="geoWifi" class="form-control geo-textarea"
+          placeholder="CodeDifferently-WiFi&#10;CD-Staff&#10;CD-Students">CodeDifferently-WiFi
+CD-Staff
+CD-Students</textarea>
+      </div>
+
+      <div class="geo-preset-row">
+        <span class="preset-label">Quick Presets:</span>
+        <button class="btn-preset" onclick="applyPreset(40)">Tight (40m)</button>
+        <button class="btn-preset active" onclick="applyPreset(60)">Standard (60m)</button>
+        <button class="btn-preset" onclick="applyPreset(100)">Wide (100m)</button>
+      </div>
+
+      <button class="btn-primary btn-full mt-16" onclick="saveGeofence()">
+        <i class="fa fa-save"></i> Save Geofence Configuration
+      </button>
+    </div>
+  </div>
+
+  <!-- Right: Map + Live Test -->
+  <div class="geo-right-col">
+    <!-- Interactive Map -->
+    <div class="card geo-map-card">
+      <div class="card-header">
+        <h3><i class="fa fa-map"></i> Campus Map</h3>
+        <div class="header-actions">
+          <button class="btn-secondary btn-sm" onclick="dropPinHere()">
+            <i class="fa fa-map-pin"></i> Drop Pin Here
+          </button>
+          <button class="btn-secondary btn-sm" onclick="useMyLocation()">
+            <i class="fa fa-crosshairs"></i> Use My Location
+          </button>
+        </div>
+      </div>
+      <div id="geoMap" class="geo-map-canvas">
+        <div class="geo-map-loading" id="geoMapLoading">
+          <i class="fa fa-spinner fa-spin"></i>
+          <p>Loading map…</p>
+        </div>
+        <!-- Leaflet map rendered here by JS -->
+      </div>
+      <p class="geo-map-hint"><i class="fa fa-hand-pointer"></i> Click anywhere on the map to move the school pin</p>
+    </div>
+
+    <!-- Live Location Test Panel -->
+    <div class="card geo-test-card">
+      <div class="card-header">
+        <h3><i class="fa fa-vial"></i> Live Location Test</h3>
+      </div>
+      <div id="geoTestResult" class="geo-test-idle">
+        <i class="fa fa-satellite-dish"></i>
+        <p>Click "Test My Location" to verify you are within the geofence</p>
+      </div>
+      <div class="geo-test-checks" id="geoTestChecks" style="display:none">
+        <div class="geo-tc" id="gtc-gps">
+          <i class="fa fa-satellite-dish"></i>
+          <span>GPS</span>
+          <strong id="gtc-gps-val">—</strong>
+          <i class="fa fa-spinner fa-spin gtc-spin" id="gtc-gps-ic"></i>
+        </div>
+        <div class="geo-tc" id="gtc-dist">
+          <i class="fa fa-ruler"></i>
+          <span>Distance</span>
+          <strong id="gtc-dist-val">—</strong>
+          <i class="fa fa-spinner fa-spin gtc-spin" id="gtc-dist-ic"></i>
+        </div>
+        <div class="geo-tc" id="gtc-acc">
+          <i class="fa fa-crosshairs"></i>
+          <span>Accuracy</span>
+          <strong id="gtc-acc-val">—</strong>
+          <i class="fa fa-spinner fa-spin gtc-spin" id="gtc-acc-ic"></i>
+        </div>
+        <div class="geo-tc" id="gtc-wifi">
+          <i class="fa fa-wifi"></i>
+          <span>WiFi</span>
+          <strong id="gtc-wifi-val">—</strong>
+          <i class="fa fa-spinner fa-spin gtc-spin" id="gtc-wifi-ic"></i>
+        </div>
+      </div>
+      <button class="btn-primary btn-full" onclick="testCurrentLocation()" style="margin-top:14px">
+        <i class="fa fa-play"></i> Run Location Test
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- Verification Audit Log -->
+<div class="card mt-24">
+  <div class="card-header">
+    <h3><i class="fa fa-shield-halved"></i> Verification Audit Log</h3>
+    <div class="header-actions">
+      <select class="select-sm" onchange="filterAuditLog(this.value)">
+        <option value="">All Students</option>
+        <option value="EMP001">Alex Johnson</option>
+        <option value="EMP002">Maria Garcia</option>
+        <option value="EMP003">DeShawn Williams</option>
+      </select>
+      <button class="btn-secondary btn-sm" onclick="loadAuditLog()"><i class="fa fa-refresh"></i> Refresh</button>
+    </div>
+  </div>
+  <div class="audit-stats-row" id="auditStatsRow">
+    <div class="audit-stat green"><i class="fa fa-circle-check"></i><span id="ast-full">—</span><small>Full</small></div>
+    <div class="audit-stat yellow"><i class="fa fa-triangle-exclamation"></i><span id="ast-partial">—</span><small>Partial</small></div>
+    <div class="audit-stat red"><i class="fa fa-circle-xmark"></i><span id="ast-failed">—</span><small>Failed</small></div>
+    <div class="audit-stat blue"><i class="fa fa-ruler"></i><span id="ast-avg">—</span><small>Avg Distance</small></div>
+  </div>
+  <div class="table-wrap">
+    <table class="cd-table" id="auditTable">
+      <thead>
+        <tr>
+          <th>Student ID</th>
+          <th>Time</th>
+          <th>Distance</th>
+          <th>GPS Acc.</th>
+          <th>WiFi</th>
+          <th>Status</th>
+          <th>Note</th>
+        </tr>
+      </thead>
+      <tbody id="auditTableBody">
+        <tr><td colspan="7" class="text-center" style="color:var(--gray400);padding:24px">
+          No verifications yet — students clock in to generate audit data
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>`
+  return shell('Geofence Config', body, 'admin')
 }
 
 export default app
