@@ -206,30 +206,158 @@ function filterStudents(q) {
   });
 }
 
-/* ── QB SYNC ─────────────────────────────────────── */
-function syncQuickBooks() {
-  const status = document.getElementById('qbSyncStatus');
-  if (!status) return;
-  status.style.display = 'block';
-  status.innerHTML = '<i class="fa fa-spinner fa-spin"></i> AI reviewing entries…';
-  status.style.color = 'var(--yellow)';
-  setTimeout(() => {
-    status.innerHTML = '<i class="fa fa-robot"></i> AI check passed — 5 Present, 2 Late flagged for review…';
-    setTimeout(() => {
-      status.innerHTML = '<i class="fa fa-circle-check"></i> ✓ Synced to QuickBooks — 7 payroll entries created';
-      status.style.color = 'var(--green)';
-    }, 1800);
-  }, 1200);
+
+/* ── AI KEY MANAGEMENT ───────────────────────────── */
+// Key lives only in localStorage — sent per-request, never stored server-side
+function getAIKey()  { return localStorage.getItem('cd_ai_key') || ''; }
+function getAIBase() { return localStorage.getItem('cd_ai_base') || 'https://www.genspark.ai/api/llm_proxy/v1'; }
+
+function saveAIKey() {
+  const k = document.getElementById('aiApiKey')?.value?.trim();
+  const b = document.getElementById('aiBaseUrl')?.value?.trim();
+  if (!k) { showToast('Please enter an API key', 'orange'); return; }
+  localStorage.setItem('cd_ai_key', k);
+  if (b) localStorage.setItem('cd_ai_base', b);
+  showToast('\u2713 AI key saved in browser', 'green');
+  updateKeyStatus(true);
 }
 
-function previewQB() {
-  showToast('Opening QuickBooks preview…', 'purple');
+function updateKeyStatus(saved) {
+  const el = document.getElementById('aiKeyStatus');
+  if (!el) return;
+  if (saved || getAIKey()) {
+    el.innerHTML = '<span style="color:var(--green)"><i class="fa fa-circle-check"></i> API key configured</span>';
+  } else {
+    el.innerHTML = '<span style="color:var(--yellow)"><i class="fa fa-triangle-exclamation"></i> No API key — enter key below to enable AI</span>';
+  }
 }
 
-function syncQBFromAdmin() {
-  showToast('⚡ Syncing payroll to QuickBooks…', 'purple');
-  setTimeout(() => showToast('✓ 36 payroll entries synced to QuickBooks!', 'green'), 2000);
+async function testAIKey() {
+  const k = document.getElementById('aiApiKey')?.value?.trim() || getAIKey();
+  const b = document.getElementById('aiBaseUrl')?.value?.trim() || getAIBase();
+  if (!k) { showToast('Enter an API key first', 'orange'); return; }
+  showToast('Testing API key...', 'purple');
+  try {
+    const res = await fetch('/api/ai/test-key', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ apiKey: k, baseUrl: b })
+    });
+    const data = await res.json();
+    if (data.success) {
+      showToast('\u2713 Key valid! AI says: ' + data.response, 'green');
+      localStorage.setItem('cd_ai_key', k);
+      if (b) localStorage.setItem('cd_ai_base', b);
+      updateKeyStatus(true);
+    } else {
+      showToast('\u2717 Invalid key: ' + data.error, 'orange');
+    }
+  } catch (e) { showToast('Test failed: ' + e.message, 'orange'); }
 }
+
+/* ── QB + AI SYNC (key from localStorage) ─────────── */
+const DEMO_RECORDS = [
+  { student: 'Alex Johnson',    clockIn: '9:02 AM', clockOut: '5:02 PM', hours: 8.0,  status: 'present' },
+  { student: 'Maria Garcia',    clockIn: '9:14 AM', clockOut: '5:00 PM', hours: 7.77, status: 'late'    },
+  { student: 'DeShawn Williams',clockIn: '9:01 AM', clockOut: '5:01 PM', hours: 8.0,  status: 'present' },
+  { student: 'Priya Patel',     clockIn: null,      clockOut: null,      hours: 0,    status: 'absent'  },
+  { student: 'Liam Chen',       clockIn: '8:58 AM', clockOut: '5:00 PM', hours: 8.03, status: 'present' },
+  { student: 'Aaliyah Brown',   clockIn: '9:22 AM', clockOut: '5:03 PM', hours: 7.68, status: 'late'    },
+  { student: 'Marcus Thompson', clockIn: '9:00 AM', clockOut: '5:00 PM', hours: 8.0,  status: 'present' },
+  { student: 'Sofia Rodriguez', clockIn: null,      clockOut: null,      hours: 0,    status: 'absent'  },
+];
+
+async function runAIReview(records, date) {
+  const key = getAIKey();
+  if (!key) throw new Error('No AI key. Go to Settings \u2192 AI & QB Integration to add your key.');
+  const res = await fetch('/api/ai/run-with-key', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ apiKey: key, baseUrl: getAIBase(), records, date })
+  });
+  return await res.json();
+}
+
+async function syncQuickBooks() {
+  const statusEl = document.getElementById('qbSyncStatus');
+  if (!statusEl) return;
+  const key = getAIKey();
+  if (!key) {
+    statusEl.style.display = 'block';
+    statusEl.style.color = 'var(--yellow)';
+    statusEl.innerHTML = '<i class="fa fa-triangle-exclamation"></i> No AI key configured. <a href="/settings" style="color:var(--purple);text-decoration:underline">Go to Settings</a> to add your OpenAI key.';
+    return;
+  }
+  statusEl.style.display = 'block';
+  statusEl.style.color = 'var(--yellow)';
+  statusEl.innerHTML = '<i class="fa fa-robot fa-spin"></i> AI reviewing attendance for anomalies...';
+  try {
+    const reviewData = await runAIReview(DEMO_RECORDS, new Date().toISOString().slice(0,10));
+    if (!reviewData.success) throw new Error(reviewData.error);
+    const { data } = reviewData;
+    const ac = data.anomalies?.length || 0;
+    const s = data.summary || {};
+    statusEl.innerHTML = '<i class="fa fa-robot"></i> <strong>AI Review Complete</strong> — ' + ac + ' anomal' + (ac!==1?'ies':'y') + '<br/>'
+      + '<small style="opacity:.8">' + (s.ai_recommendation||'') + '</small><br/>'
+      + '<div style="margin-top:8px;display:flex;gap:12px;flex-wrap:wrap">'
+      + '<span style="color:var(--green)">\u2713 ' + (s.eligible_count||0) + ' eligible</span>'
+      + '<span style="color:var(--red)">\u2717 ' + (s.ineligible_count||0) + ' ineligible</span>'
+      + '<span style="color:var(--gray400)">\u23f1 ' + (s.total_hours||0) + 'h total</span></div>'
+      + (ac>0?'<div style="margin-top:6px;color:var(--yellow);font-size:13px"><i class="fa fa-triangle-exclamation"></i> '+(data.anomalies.map(a=>a.student+' - '+a.issue).join(' | '))+'</div>':'')
+      + '<div style="margin-top:10px"><i class="fa fa-spinner fa-spin"></i> Pushing to QuickBooks...</div>';
+    statusEl.style.color = 'var(--white)';
+    await new Promise(r=>setTimeout(r,1000));
+    const syncRes = await fetch('/api/qb/payroll/sync', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ entries: data.qb_entries||[], confirmed: true })
+    });
+    const sd = await syncRes.json();
+    if (!sd.success) throw new Error(sd.error);
+    statusEl.style.color = 'var(--green)';
+    statusEl.innerHTML = '<i class="fa fa-circle-check"></i> <strong>\u2713 Synced to QuickBooks!</strong> - ' + sd.synced + ' payroll entries created<br/>'
+      + '<small style="opacity:.7">Txn IDs: '+(sd.transactions?.slice(0,3).map(t=>t.qb_txn_id).join(', '))+(sd.synced>3?'...':'')+'</small>';
+    showToast('\u2713 ' + sd.synced + ' entries synced to QuickBooks!', 'green');
+  } catch(err) {
+    statusEl.style.color = 'var(--red)';
+    statusEl.innerHTML = '<i class="fa fa-circle-xmark"></i> ' + err.message;
+    showToast('QB sync error: ' + err.message, 'orange');
+  }
+}
+
+async function previewQB() {
+  if (!getAIKey()) { showToast('Add your AI key in Settings first', 'orange'); return; }
+  showToast('Running AI payroll preview...', 'purple');
+  try {
+    const d = await runAIReview(DEMO_RECORDS, new Date().toISOString().slice(0,10));
+    if (d.success) { const s=d.data.summary; showToast('Preview: '+s.eligible_count+' eligible, '+s.total_hours+'h, '+s.anomaly_count+' anomalies', 'purple'); }
+    else throw new Error(d.error);
+  } catch(e) { showToast('Preview error: '+e.message, 'orange'); }
+}
+
+async function syncQBFromAdmin() {
+  if (!getAIKey()) { showToast('Add your AI key in Settings \u2192 AI & QB Integration first', 'orange'); return; }
+  showToast('AI reviewing records before sync...', 'purple');
+  try {
+    const d = await runAIReview(DEMO_RECORDS, new Date().toISOString().slice(0,10));
+    if (!d.success) throw new Error(d.error);
+    await new Promise(r=>setTimeout(r,600));
+    const sync = await fetch('/api/qb/payroll/sync',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({entries:d.data.qb_entries||[],confirmed:true})});
+    const sd = await sync.json();
+    showToast('\u2713 '+sd.synced+' payroll entries pushed to QuickBooks!', 'green');
+  } catch(e) { showToast('Sync error: '+e.message, 'orange'); }
+}
+
+async function checkStipendAI(studentName, hours, pct, lates, absences) {
+  if (!getAIKey()) return { success: false, error: 'No AI key' };
+  try {
+    const res = await fetch('/api/ai/stipend-check', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ student: studentName, totalHours: hours, attendancePct: pct, lates, absences })
+    });
+    return await res.json();
+  } catch(e) { return { success: false, error: e.message }; }
+}
+
 
 /* ── CHARTS (Chart.js via CDN) ──────────────────── */
 function initCharts() {
@@ -386,3 +514,12 @@ window.addEventListener('DOMContentLoaded', () => {
   if (sd) { const d = new Date(); d.setDate(1); sd.value = d.toISOString().slice(0,10); }
   if (ed) ed.value = today;
 });
+
+function toggleAIKeyVis() {
+  const inp = document.getElementById('aiApiKey');
+  const ico = document.getElementById('aiKeyEye');
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  if (ico) ico.className = show ? 'fa fa-eye-slash' : 'fa fa-eye';
+}

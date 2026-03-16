@@ -1325,3 +1325,43 @@ body {
   .btn-primary, .btn-secondary { width: 100%; justify-content: center; }
   .stats-bar { flex-direction: column; }
 }
+
+/* ── AI KEY SETUP PANEL ──────────────────────────── */
+.ai-key-setup {
+  background: var(--navy);
+  border-radius: var(--radius-sm);
+  padding: 18px;
+  margin-bottom: 20px;
+  border: 1px solid rgba(155,61,232,.25);
+}
+.ai-key-header {
+  display: flex;
+  align-items: flex-start;
+  gap: 12px;
+  margin-bottom: 16px;
+}
+.ai-key-header > i {
+  font-size: 22px;
+  background: var(--grad);
+  -webkit-background-clip: text;
+  -webkit-text-fill-color: transparent;
+  margin-top: 2px;
+  flex-shrink: 0;
+}
+.ai-key-header strong { color: var(--white); display: block; margin-bottom: 2px; }
+.ai-key-header p { color: var(--gray400); font-size: 13px; margin: 0; }
+.ai-key-status { margin-left: auto; font-size: 13px; white-space: nowrap; }
+.ai-key-fields { display: flex; flex-direction: column; gap: 12px; }
+.ai-key-fields .form-group label { color: var(--gray200); }
+.ai-key-fields .form-control { background: rgba(255,255,255,.06); border-color: rgba(155,61,232,.3); color: var(--white); }
+.ai-key-fields .form-control::placeholder { color: var(--gray600); }
+.ai-key-fields .form-control:focus { border-color: var(--purple); background: rgba(255,255,255,.1); }
+.ai-key-actions { display: flex; gap: 10px; flex-wrap: wrap; }
+.ai-key-note {
+  color: var(--gray400);
+  font-size: 12px;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: 0;
+}
