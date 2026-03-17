@@ -267,8 +267,14 @@ function runAuthGuard() {
     const allowed = ROLE_ROUTES[role] || [];
     const hasAccess = allowed.some(r => path.startsWith(r));
     if (!hasAccess) {
+      // Show toast briefly, then dismiss it before navigating so it never persists
       showToast(`Access denied — redirecting to your dashboard`, 'orange');
-      setTimeout(() => { window.location.replace(ROLE_HOME[role] || '/login'); }, 1200);
+      setTimeout(() => {
+        // Dismiss the toast immediately before the page changes
+        const t = document.getElementById('globalToast');
+        if (t) t.style.display = 'none';
+        window.location.replace(ROLE_HOME[role] || '/login');
+      }, 1200);
       return;
     }
   } catch(e) { /* fail-safe: do nothing, page stays visible */ }
