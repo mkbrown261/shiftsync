@@ -2214,3 +2214,67 @@ body {
 
 /* mt-20 utility */
 .mt-20 { margin-top: 20px; }
+
+/* ══════════════════════════════════════════════════════
+   EXTERNAL INTEGRATION SERVICE — UI STYLES
+   ══════════════════════════════════════════════════════ */
+
+/* Integration result banner (inline feedback) */
+.integration-result-banner {
+  padding: 14px 18px;
+  border-radius: 10px;
+  margin: 0 0 16px;
+  animation: fadeInDown .3s ease;
+}
+
+/* Integration service info cards */
+.integration-service-card {
+  background: rgba(255,255,255,.03);
+  border: 1px solid var(--border);
+  border-radius: 10px;
+  padding: 14px 16px;
+  transition: border-color .2s;
+}
+.integration-service-card:hover {
+  border-color: rgba(155,61,232,.4);
+}
+
+/* Export card improvements */
+.export-card {
+  cursor: pointer;
+  transition: transform .15s, box-shadow .15s;
+}
+.export-card:hover {
+  transform: translateY(-2px);
+  box-shadow: 0 6px 24px rgba(0,0,0,.25);
+}
+.export-card:active { transform: translateY(0); }
+
+/* Generate button disabled state */
+button:disabled {
+  opacity: .6;
+  cursor: not-allowed;
+}
+
+/* Integration log section smooth reveal */
+#integrationLogSection {
+  animation: fadeIn .25s ease;
+}
+
+/* grid-2 utility (for integration panel) */
+.grid-2 {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 16px;
+}
+@media (max-width: 640px) {
+  .grid-2 { grid-template-columns: 1fr; }
+}
+
+/* QA status badge in settings */
+#qbStatus, #qbIntStatus {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  flex-wrap: wrap;
+}
