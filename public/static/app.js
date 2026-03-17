@@ -1517,6 +1517,10 @@ function showIntegrationResult(config) {
 // ── Generate Report (real API) ───────────────────────────────────────
 async function generateReport() {
   const type    = document.getElementById('reportType')?.value || 'attendance';
+
+  // Delegate study_time to the dedicated handler
+  if (type === 'study_time') return generateStudyTimeReport();
+
   const dfrom   = document.getElementById('startDate')?.value || '';
   const dto     = document.getElementById('endDate')?.value   || '';
   const filter  = document.getElementById('studentFilter')?.value || '';
@@ -1564,7 +1568,7 @@ async function generateReport() {
   } catch (e) {
     showToast('Report generation error: ' + e.message, 'red');
   } finally {
-    if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fa fa-bolt"></i> Generate'; }
+    if (genBtn) { genBtn.disabled = false; genBtn.innerHTML = '<i class="fa fa-file-export"></i> Generate &amp; Export'; }
   }
 }
 
@@ -1588,12 +1592,12 @@ function exportCSV() {
     const blob = new Blob([csv], { type: 'text/csv' });
     const a    = document.createElement('a');
     a.href     = URL.createObjectURL(blob);
-    a.download = 'ConnectDifferently_Attendance_' + new Date().toISOString().slice(0,10) + '.csv';
+    a.download = 'ShiftSync_Attendance_' + new Date().toISOString().slice(0,10) + '.csv';
     a.click();
     showIntegrationResult({
       success: true,
       title: '✓ CSV Downloaded',
-      message: `Attendance report downloaded — ${rows.length} records exported to ConnectDifferently_Attendance_${new Date().toISOString().slice(0,10)}.csv`,
+      message: `Attendance report downloaded — ${rows.length} records exported to ShiftSync_Attendance_${new Date().toISOString().slice(0,10)}.csv`,
     });
     showToast(`✓ CSV downloaded — ${rows.length} records`, 'green');
     return;
@@ -1609,7 +1613,7 @@ function exportCSV() {
   const blob = new Blob([csv], { type: 'text/csv' });
   const a    = document.createElement('a');
   a.href     = URL.createObjectURL(blob);
-  a.download = 'ConnectDifferently_Attendance_' + new Date().toISOString().slice(0,10) + '.csv';
+  a.download = 'ShiftSync_Attendance_' + new Date().toISOString().slice(0,10) + '.csv';
   a.click();
   showToast('✓ CSV downloaded!', 'green');
 }
@@ -2107,7 +2111,17 @@ function loadDate(v) {
 function updateChart(v) {
   showToast('Chart updated: ' + v, 'purple');
 }
-function updateReportFields(v) { }
+function updateReportFields(v) {
+  // Swap generate button label for study_time
+  const btn = document.getElementById('generateBtn');
+  if (btn) {
+    if (v === 'study_time') {
+      btn.innerHTML = '<i class="fa fa-book-open-reader"></i> Generate Study Time Report';
+    } else {
+      btn.innerHTML = '<i class="fa fa-file-export"></i> Generate &amp; Export';
+    }
+  }
+}
 function filterRecords(v) { }
 
 /* ══════════════════════════════════════════════════════════════════
@@ -3268,3 +3282,504 @@ async function loadIntegrationStatus() {
     }
   }
 })();
+
+/* ══════════════════════════════════════════════════════════════════
+   STUDY TIME MODULE — Client-side
+   Non-destructive: all functions try/catch and fall back gracefully.
+   ══════════════════════════════════════════════════════════════════ */
+
+let _stLastGaps = null;   // cache from last gap detection
+
+// ── Helpers ──────────────────────────────────────────────────────────
+function stTimeToMins(t) {
+  if (!t) return 0;
+  const [h, m] = t.split(':').map(Number);
+  return h * 60 + m;
+}
+function stMinsToTime(m) {
+  return String(Math.floor(m/60)).padStart(2,'0') + ':' + String(m%60).padStart(2,'0');
+}
+function stFormatDuration(mins) {
+  const h = Math.floor(mins / 60), m = mins % 60;
+  return h > 0 ? `${h}h ${m > 0 ? m + 'm' : ''}`.trim() : `${m}m`;
+}
+
+// ── Open Study Time modal ─────────────────────────────────────────────
+function openSTModal(prefill) {
+  const modal = document.getElementById('stModal');
+  if (!modal) return;
+  // Default date to today
+  const today = new Date().toISOString().slice(0,10);
+  const dateEl = document.getElementById('stDate');
+  if (dateEl) dateEl.value = prefill?.date || today;
+  if (prefill?.start_time) { const el = document.getElementById('stStartTime'); if (el) el.value = prefill.start_time; }
+  if (prefill?.end_time)   { const el = document.getElementById('stEndTime');   if (el) el.value = prefill.end_time; }
+  const errBox = document.getElementById('stModalErrors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
+  stUpdateDurationPreview();
+  modal.style.display = 'flex';
+
+  // Wire up live duration preview
+  ['stStartTime','stEndTime'].forEach(id => {
+    const el = document.getElementById(id);
+    if (el) el.addEventListener('change', stUpdateDurationPreview);
+  });
+}
+
+function stUpdateDurationPreview() {
+  const s = document.getElementById('stStartTime')?.value;
+  const e = document.getElementById('stEndTime')?.value;
+  const prev = document.getElementById('stDurationPreview');
+  const text = document.getElementById('stDurationText');
+  if (!s || !e || !prev || !text) return;
+  const mins = stTimeToMins(e) - stTimeToMins(s);
+  if (mins > 0) {
+    text.textContent = `${stFormatDuration(mins)} of Study Time will be verified`;
+    prev.style.display = 'block';
+  } else {
+    prev.style.display = 'none';
+  }
+}
+
+// ── Submit a new Study Time block ────────────────────────────────────
+async function stSubmitBlock() {
+  const errBox = document.getElementById('stModalErrors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
+
+  const classId   = document.getElementById('stClassId')?.value?.trim() || 'CD-2024-WD';
+  const date      = document.getElementById('stDate')?.value;
+  const startTime = document.getElementById('stStartTime')?.value;
+  const endTime   = document.getElementById('stEndTime')?.value;
+  const assignment = document.getElementById('stAssignment')?.value?.trim();
+  const objective  = document.getElementById('stObjective')?.value?.trim();
+  const notes      = document.getElementById('stNotes')?.value?.trim();
+  const instructor = sessionStorage.getItem('cd_user_email') || 'instructor@codedifferently.org';
+
+  // Client-side validation
+  const errors = [];
+  if (!date)      errors.push('Please select a date.');
+  if (!startTime) errors.push('Start time is required.');
+  if (!endTime)   errors.push('End time is required.');
+  if (startTime && endTime && stTimeToMins(endTime) <= stTimeToMins(startTime))
+    errors.push('End time must be after start time.');
+  if (errors.length) {
+    if (errBox) {
+      errBox.innerHTML = errors.map(e => `<div class="auth-err-row"><i class="fa fa-circle-exclamation"></i>${e}</div>`).join('');
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  const btn = document.getElementById('stSubmitBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Verifying…'; }
+
+  try {
+    const res  = await fetch('/api/study-time/verify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        class_id: classId, date, start_time: startTime, end_time: endTime,
+        verified_by: instructor,
+        assignment_description: assignment, study_objective: objective, notes,
+      }),
+    });
+    const data = await res.json();
+
+    if (data.success) {
+      closeModal('stModal');
+      showToast(data.message, 'green');
+      stLoadRecords();
+      if (data.flagged > 0) showToast(`⚠ ${data.flagged} record(s) flagged for fraud review.`, 'orange');
+    } else {
+      const msgs = data.errors || [data.error || 'Unknown error'];
+      if (errBox) {
+        errBox.innerHTML = msgs.map(e => `<div class="auth-err-row"><i class="fa fa-circle-exclamation"></i>${e}</div>`).join('');
+        errBox.style.display = 'block';
+      }
+    }
+  } catch (e) {
+    showToast('Study Time save error: ' + e.message, 'red');
+    closeModal('stModal');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-circle-check"></i> Verify Study Time'; }
+  }
+}
+
+// ── Load + render Study Time records table ───────────────────────────
+async function stLoadRecords() {
+  const tbody = document.getElementById('stRecordsBody');
+  if (!tbody) return;
+  tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:16px"><i class="fa fa-spinner fa-spin"></i> Loading…</td></tr>';
+
+  try {
+    const res  = await fetch('/api/study-time/records');
+    const data = await res.json();
+
+    // Update totals badge
+    const hoursEl = document.getElementById('stTotalHours');
+    if (hoursEl) hoursEl.textContent = data.total_study_hours + 'h';
+
+    // Update fraud badge
+    const fraudRes  = await fetch('/api/study-time/fraud-flags?unreviewed=1');
+    const fraudData = await fraudRes.json();
+    const fraudBadge = document.getElementById('stFraudBadge');
+    const fraudCount = document.getElementById('stFraudCount');
+    if (fraudBadge && fraudData.total > 0) {
+      fraudBadge.style.display = 'inline-flex';
+      if (fraudCount) fraudCount.textContent = fraudData.total;
+    }
+
+    if (!data.records || data.records.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="8" style="text-align:center;padding:24px;color:var(--gray400)">No Study Time records yet. Use "Detect Gaps" or "New Study Block" to add one.</td></tr>';
+      return;
+    }
+
+    tbody.innerHTML = data.records.map(r => {
+      const statusCls = r.status === 'verified' ? 'badge-present' : r.status === 'flagged' ? 'badge-absent' : 'badge-late';
+      const fraudIcon = r.fraud_flags?.length ? `<i class="fa fa-triangle-exclamation" style="color:var(--yellow);margin-left:4px" title="${r.fraud_flags.join(', ')}"></i>` : '';
+      return `<tr id="stRow-${r.id}">
+        <td><div class="student-cell"><div class="avatar sm">${r.student_name.split(' ').map(n=>n[0]).join('')}</div><span>${r.student_name}</span></div></td>
+        <td style="font-size:.82rem">${r.date}</td>
+        <td><span class="time-chip">${r.start_time} – ${r.end_time}</span></td>
+        <td><span style="color:var(--purple);font-weight:600">${stFormatDuration(r.duration_minutes)}</span></td>
+        <td style="font-size:.8rem;color:var(--gray400);max-width:160px;white-space:nowrap;overflow:hidden;text-overflow:ellipsis" title="${r.assignment_description||''}">${r.assignment_description || '—'}</td>
+        <td style="font-size:.78rem;color:var(--gray400)">${(r.verified_by_instructor||'').split('@')[0]}</td>
+        <td><span class="badge ${statusCls}">${r.status}</span>${fraudIcon}</td>
+        <td>
+          <div style="display:flex;gap:6px">
+            <button class="btn-icon btn-note" title="Edit block" onclick="stEditRecord('${r.id}','${r.start_time}','${r.end_time}')"><i class="fa fa-pen"></i></button>
+            <button class="btn-icon" style="color:var(--red)" title="Remove" onclick="stDeleteRecord('${r.id}','${r.student_name}',this)"><i class="fa fa-trash"></i></button>
+          </div>
+        </td>
+      </tr>`;
+    }).join('');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="8" style="text-align:center;padding:16px;color:var(--red)"><i class="fa fa-triangle-exclamation"></i> Could not load Study Time records: ${e.message}</td></tr>`;
+  }
+}
+
+// ── Edit a record inline ──────────────────────────────────────────────
+async function stEditRecord(id, currentStart, currentEnd) {
+  const newStart = prompt('New start time (HH:MM):', currentStart);
+  if (!newStart) return;
+  const newEnd   = prompt('New end time (HH:MM):', currentEnd);
+  if (!newEnd) return;
+  try {
+    const res  = await fetch(`/api/study-time/records/${id}`, {
+      method: 'PATCH',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ start_time: newStart, end_time: newEnd }),
+    });
+    const data = await res.json();
+    showToast(data.success ? data.message : 'Update failed: ' + data.error, data.success ? 'green' : 'red');
+    if (data.success) stLoadRecords();
+  } catch (e) { showToast('Edit error: ' + e.message, 'red'); }
+}
+
+// ── Delete a record ───────────────────────────────────────────────────
+async function stDeleteRecord(id, name, btn) {
+  if (!confirm(`Remove Study Time record for ${name}?`)) return;
+  try {
+    const res  = await fetch(`/api/study-time/records/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      const row = document.getElementById('stRow-' + id);
+      if (row) { row.style.opacity = '.3'; row.style.pointerEvents = 'none'; }
+      showToast(data.message, 'orange');
+      setTimeout(stLoadRecords, 600);
+    } else {
+      showToast('Delete failed: ' + data.error, 'red');
+    }
+  } catch (e) { showToast('Delete error: ' + e.message, 'red'); }
+}
+
+// ── Detect attendance gaps and show suggestion banner ────────────────
+async function stDetectGaps() {
+  const banner = document.getElementById('stSuggestionBanner');
+  const textEl = document.getElementById('stSuggestionText');
+  const gapsEl = document.getElementById('stSuggestionGaps');
+  if (!banner) { openSTModal(); return; }
+
+  showToast('Scanning for attendance gaps…', 'purple');
+  try {
+    const date = document.getElementById('attendanceDate')?.value || new Date().toISOString().slice(0,10);
+    const res  = await fetch('/api/study-time/detect-gaps', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ date, session_end_time: '15:00' }),
+    });
+    const data = await res.json();
+    _stLastGaps = data;
+
+    if (data.gaps_detected === 0) {
+      showToast('No unverified attendance gaps detected.', 'green');
+      banner.style.display = 'none';
+      return;
+    }
+
+    // Show suggestion banner
+    if (textEl) textEl.innerHTML = `<strong>${data.gaps_detected} student${data.gaps_detected!==1?'s':''}</strong> stayed past session end with unverified time. Total potential Study Time: <strong>${data.total_potential_study_hours}h</strong>.`;
+
+    if (gapsEl) {
+      gapsEl.innerHTML = data.gaps.map(g =>
+        `<div style="padding:6px 10px;background:rgba(255,255,255,.04);border-radius:6px;margin-bottom:6px;font-size:.82rem">
+          <span style="color:var(--gray200)">${g.student_name}</span>
+          <span style="color:var(--purple);margin:0 6px">·</span>
+          <span class="time-chip" style="font-size:.76rem">${g.gap_start} – ${g.gap_end}</span>
+          <span style="color:var(--purple);margin-left:8px;font-weight:600">${stFormatDuration(g.gap_minutes)}</span>
+        </div>`
+      ).join('');
+    }
+
+    banner.style.display = 'block';
+    showToast(`${data.gaps_detected} gap${data.gaps_detected!==1?'s':''} found — ${data.total_potential_study_hours}h total`, 'purple');
+  } catch (e) {
+    showToast('Gap detection error: ' + e.message, 'orange');
+    openSTModal(); // fallback: open manual modal
+  }
+}
+
+// ── Apply all detected gaps as Study Time ────────────────────────────
+async function stApplySuggestion() {
+  if (!_stLastGaps || !_stLastGaps.suggested_block) { openSTModal(); return; }
+  const block = _stLastGaps.suggested_block;
+  const date  = _stLastGaps.date;
+  // Pre-fill modal with the suggested block and submit
+  openSTModal({
+    date,
+    start_time: block.start_time,
+    end_time:   block.end_time,
+  });
+  showToast('Form pre-filled with suggested gap. Review and click Verify.', 'purple');
+}
+
+/* ── Student dashboard: load Study Time (read-only) ────────────────── */
+async function loadStudentStudyTime() {
+  const container = document.getElementById('studentSTContent');
+  if (!container) return;
+
+  try {
+    // In a real app, filter by student_id from session; demo shows STU001
+    const studentId = 'STU001';
+    const res  = await fetch(`/api/study-time/records?student_id=${studentId}`);
+    const data = await res.json();
+
+    if (!data.records || data.records.length === 0) {
+      container.innerHTML = `<div style="text-align:center;padding:20px;color:var(--gray400)">
+        <i class="fa fa-book-open-reader fa-2x" style="opacity:.3;display:block;margin-bottom:8px"></i>
+        No verified Study Time periods yet. Your instructor will add them when applicable.
+      </div>`;
+      return;
+    }
+
+    const totalHours = data.total_study_hours;
+    container.innerHTML = `
+      <div style="padding:12px 0 16px;display:flex;gap:12px;flex-wrap:wrap">
+        <div style="padding:10px 16px;background:rgba(155,61,232,.1);border-radius:8px;text-align:center;min-width:100px">
+          <div style="font-size:1.4rem;font-weight:700;color:var(--purple)">${totalHours}h</div>
+          <div style="font-size:.76rem;color:var(--gray400)">Total Study Time</div>
+        </div>
+        <div style="padding:10px 16px;background:rgba(34,197,94,.08);border-radius:8px;text-align:center;min-width:100px">
+          <div style="font-size:1.4rem;font-weight:700;color:var(--green)">${data.records.filter(r=>r.status==='verified').length}</div>
+          <div style="font-size:.76rem;color:var(--gray400)">Verified Blocks</div>
+        </div>
+      </div>
+      <div style="display:flex;flex-direction:column;gap:8px">
+        ${data.records.map(r => `
+          <div style="display:flex;align-items:flex-start;gap:12px;padding:12px 14px;background:rgba(155,61,232,.06);border-radius:10px;border-left:3px solid var(--purple)">
+            <div style="width:36px;height:36px;border-radius:8px;background:rgba(155,61,232,.15);display:flex;align-items:center;justify-content:center;flex-shrink:0">
+              <i class="fa fa-book-open-reader" style="color:var(--purple)"></i>
+            </div>
+            <div style="flex:1">
+              <div style="display:flex;align-items:center;gap:8px;flex-wrap:wrap">
+                <strong style="font-size:.88rem">${r.date}</strong>
+                <span class="time-chip" style="font-size:.76rem">${r.start_time} – ${r.end_time}</span>
+                <span style="color:var(--purple);font-size:.82rem;font-weight:600">${stFormatDuration(r.duration_minutes)}</span>
+                <span class="badge ${r.status==='verified'?'badge-present':'badge-late'}" style="font-size:.7rem">${r.status}</span>
+              </div>
+              ${r.assignment_description ? `<p style="font-size:.8rem;color:var(--gray300);margin:4px 0 0"><i class="fa fa-file-lines" style="margin-right:4px"></i>${r.assignment_description}</p>` : ''}
+              ${r.notes ? `<p style="font-size:.78rem;color:var(--gray400);margin:3px 0 0"><i class="fa fa-sticky-note" style="margin-right:4px"></i>${r.notes}</p>` : ''}
+              <p style="font-size:.74rem;color:var(--gray400);margin:4px 0 0">
+                <i class="fa fa-shield-halved" style="color:var(--purple)"></i>
+                Verified by ${(r.verified_by_instructor||'').split('@')[0]} · ${new Date(r.verification_timestamp).toLocaleString()}
+              </p>
+            </div>
+          </div>`).join('')}
+      </div>
+      <p style="font-size:.74rem;color:var(--gray400);margin-top:12px;padding:8px 12px;background:rgba(255,255,255,.03);border-radius:6px">
+        <i class="fa fa-lock" style="margin-right:4px"></i>
+        Study Time is verified by your instructor only. You cannot edit or request these entries.
+      </p>`;
+  } catch (e) {
+    container.innerHTML = `<div style="padding:16px;color:var(--gray400);font-size:.84rem">
+      <i class="fa fa-triangle-exclamation" style="color:var(--yellow)"></i>
+      Study Time could not load — ${e.message}. This does not affect your clock-in records.
+    </div>`;
+  }
+}
+
+// Auto-init on student page
+(function() {
+  if (document.getElementById('studentStudyTimePanel')) {
+    loadStudentStudyTime();
+  }
+  // Auto-load instructor Study Time records on instructor page
+  if (document.getElementById('studyTimeManager')) {
+    stLoadRecords();
+  }
+})();
+
+/* ── Study Time report handler (extends generateReport) ────────────── */
+async function generateStudyTimeReport() {
+  showToast('Generating Study Time report…', 'purple');
+  try {
+    const [recRes, sumRes] = await Promise.all([
+      fetch('/api/study-time/records'),
+      fetch('/api/study-time/summary'),
+    ]);
+    const [recData, sumData] = await Promise.all([recRes.json(), sumRes.json()]);
+    const records = recData.records || [];
+    const summary = sumData.summary || {};
+
+    // Populate/replace report preview table
+    const preview = document.getElementById('reportPreview');
+    if (preview) {
+      const tbody = preview.querySelector('tbody');
+      if (tbody) {
+        tbody.innerHTML = records.map(r => `<tr>
+          <td><div class="student-cell"><div class="avatar sm">${r.student_name.split(' ').map(n=>n[0]).join('')}</div><span>${r.student_name}</span></div></td>
+          <td>${(r.duration_minutes/60).toFixed(1)}h</td>
+          <td><span class="badge" style="background:rgba(155,61,232,.15);color:var(--purple);font-size:.74rem">STUDY_TIME</span></td>
+          <td>${r.date}</td>
+          <td><span class="time-chip">${r.start_time} – ${r.end_time}</span></td>
+        </tr>`).join('');
+      }
+      // Update header
+      const header = preview.querySelector('h3');
+      if (header) header.innerHTML = '<i class="fa fa-book-open-reader"></i> Study Time Report';
+    }
+
+    // Store for CSV export with STUDY_TIME type column
+    window._lastReport = {
+      rows: records.map(r => ({
+        student_name: r.student_name, date: r.date,
+        clock_in: r.start_time, clock_out: r.end_time,
+        attendance_type: 'STUDY_TIME',
+        verification_status: r.status, hours: (r.duration_minutes/60).toFixed(1),
+      })),
+      columns: ['Student Name','Date','Start Time','End Time','Attendance Type','Status','Hours'],
+      summary,
+    };
+
+    showIntegrationResult({
+      success: true,
+      title: '✓ Study Time Report Generated',
+      message: `${records.length} records · ${summary.total_study_hours}h total verified study time · ${summary.unique_students} students`,
+      detail: `${summary.fraud_flags_open} open fraud flags · Attendance types: ${(sumData.attendance_types||[]).join(', ')}`,
+    });
+    showToast(`✓ Study Time report — ${summary.total_study_hours}h across ${records.length} records`, 'green');
+  } catch (e) {
+    showToast('Study Time report error: ' + e.message, 'red');
+  }
+}
+
+// updateReportFields and generateReport (above) already handle study_time routing — no override needed.
+
+/* ══════════════════════════════════════════════════════════════════
+   ADMIN STUDY TIME PANEL — summary stats + fraud flag review
+   ══════════════════════════════════════════════════════════════════ */
+
+// Auto-load Study Time summary on admin dashboard
+(function () {
+  if (!document.getElementById('adminStudyTimePanel')) return;
+  adminLoadStudyTimeSummary();
+})();
+
+async function adminLoadStudyTimeSummary() {
+  try {
+    const [recRes, flagRes] = await Promise.all([
+      fetch('/api/study-time/summary'),
+      fetch('/api/study-time/fraud-flags?unreviewed=1'),
+    ]);
+    const [recData, flagData] = await Promise.all([recRes.json(), flagRes.json()]);
+    const s = recData.summary || {};
+    const setEl = (id, v) => { const el = document.getElementById(id); if (el) el.textContent = v; };
+    setEl('adminSTHours',    s.total_study_hours  ?? '—');
+    setEl('adminSTRecords',  s.total_study_records ?? '—');
+    setEl('adminSTFlags',    flagData.total        ?? '0');
+    setEl('adminSTStudents', s.unique_students     ?? '—');
+
+    // Highlight flags badge if > 0
+    const flagsEl = document.getElementById('adminSTFlags');
+    if (flagsEl && flagData.total > 0) {
+      flagsEl.style.color = 'var(--yellow)';
+    }
+  } catch (e) {
+    // Non-fatal — admin still sees the panel with dashes
+  }
+}
+
+async function adminLoadStudyFraudFlags() {
+  const panel = document.getElementById('adminFraudFlagsPanel');
+  const tbody = document.getElementById('adminFraudFlagsBody');
+  if (!panel || !tbody) return;
+
+  panel.style.display = 'block';
+  tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:14px"><i class="fa fa-spinner fa-spin"></i> Loading flags…</td></tr>';
+
+  try {
+    const res  = await fetch('/api/study-time/fraud-flags?unreviewed=1');
+    const data = await res.json();
+
+    if (!data.flags || data.flags.length === 0) {
+      tbody.innerHTML = '<tr><td colspan="6" style="text-align:center;padding:20px;color:var(--green)"><i class="fa fa-circle-check"></i> No open fraud flags — all Study Time records look clean.</td></tr>';
+      showToast('No open fraud flags.', 'green');
+      return;
+    }
+
+    tbody.innerHTML = data.flags.map(f => {
+      const sevCls = f.severity === 'error' ? 'badge-absent' : 'badge-late';
+      return `<tr id="adminFlag-${f.id}">
+        <td><strong>${f.student_name}</strong><br><span style="font-size:.74rem;color:var(--gray400)">${f.class_id}</span></td>
+        <td><code style="font-size:.76rem;background:rgba(255,255,255,.06);padding:2px 6px;border-radius:4px">${f.flag_type}</code></td>
+        <td style="max-width:220px;font-size:.78rem;color:var(--gray300)">${f.description}</td>
+        <td><span class="badge ${sevCls}" style="font-size:.72rem">${f.severity}</span></td>
+        <td style="font-size:.76rem;color:var(--gray400)">${new Date(f.timestamp).toLocaleDateString()}</td>
+        <td>
+          <button class="btn-sm btn-secondary" onclick="adminDismissFlag('${f.id}',this)">
+            <i class="fa fa-check"></i> Dismiss
+          </button>
+        </td>
+      </tr>`;
+    }).join('');
+
+    showToast(`${data.total} open fraud flag${data.total !== 1 ? 's' : ''} loaded.`, 'orange');
+  } catch (e) {
+    tbody.innerHTML = `<tr><td colspan="6" style="text-align:center;padding:14px;color:var(--red)"><i class="fa fa-triangle-exclamation"></i> Could not load flags: ${e.message}</td></tr>`;
+    showToast('Could not load fraud flags: ' + e.message, 'red');
+  }
+}
+
+async function adminDismissFlag(flagId, btn) {
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i>'; }
+  try {
+    const res  = await fetch(`/api/study-time/fraud-flags/${flagId}/review`, { method: 'PATCH' });
+    const data = await res.json();
+    if (data.success) {
+      const row = document.getElementById('adminFlag-' + flagId);
+      if (row) {
+        row.style.opacity = '.35';
+        row.style.pointerEvents = 'none';
+      }
+      showToast('Flag dismissed and marked reviewed.', 'green');
+      // Refresh summary count
+      adminLoadStudyTimeSummary();
+    } else {
+      showToast('Dismiss failed: ' + (data.error || 'Unknown'), 'red');
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Dismiss'; }
+    }
+  } catch (e) {
+    showToast('Error: ' + e.message, 'red');
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-check"></i> Dismiss'; }
+  }
+}

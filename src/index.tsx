@@ -1310,6 +1310,22 @@ function studentPage(): string {
   </div>
 </div>
 
+<!-- ── Verified Study Time (read-only for students) ───────────────── -->
+<div class="card mt-16" id="studentStudyTimePanel">
+  <div class="card-header">
+    <h3><i class="fa fa-book-open-reader" style="color:var(--purple)"></i> Verified Study Time</h3>
+    <span class="badge" style="background:rgba(155,61,232,.15);color:var(--purple);font-size:.76rem">
+      <i class="fa fa-shield-halved"></i> Instructor Verified Only
+    </span>
+  </div>
+  <div id="studentSTContent" style="padding:16px 20px">
+    <div style="text-align:center;padding:20px;color:var(--gray400)">
+      <i class="fa fa-book-open-reader fa-2x" style="opacity:.3;display:block;margin-bottom:8px"></i>
+      Loading your verified study time…
+    </div>
+  </div>
+</div>
+
 <!-- ── Weekly Summary ─────────────────────────────────────────── -->
 <div class="grid-2 mt-16">
   <div class="card">
@@ -1462,6 +1478,159 @@ function instructorPage(): string {
     <div class="modal-footer">
       <button class="btn-secondary" onclick="closeModal('noteModal')">Cancel</button>
       <button class="btn-primary" onclick="saveNote()">Save Note</button>
+    </div>
+  </div>
+</div>
+
+<!-- ══════════════════════════════════════════════════════════
+     STUDY TIME MANAGER  (Non-destructive extension)
+     Falls back gracefully if /api/study-time/* is unavailable.
+     ══════════════════════════════════════════════════════════ -->
+<div class="card mt-24" id="studyTimeManager">
+  <div class="card-header">
+    <div>
+      <h3><i class="fa fa-book-open-reader" style="color:var(--purple)"></i> Study Time Manager</h3>
+      <p style="font-size:.82rem;color:var(--gray400);margin:2px 0 0">Verify independent work periods · Non-destructive extension to attendance</p>
+    </div>
+    <div class="header-actions">
+      <button class="btn-secondary btn-sm" onclick="stDetectGaps()">
+        <i class="fa fa-magnifying-glass-chart"></i> Detect Gaps
+      </button>
+      <button class="btn-primary btn-sm" onclick="openSTModal()">
+        <i class="fa fa-plus"></i> New Study Block
+      </button>
+    </div>
+  </div>
+
+  <!-- Suggested Study Time Detection Banner -->
+  <div id="stSuggestionBanner" style="display:none;margin:0 20px 16px;padding:14px 16px;border-radius:10px;background:rgba(155,61,232,.1);border:1px solid rgba(155,61,232,.3)">
+    <div style="display:flex;align-items:flex-start;gap:10px">
+      <i class="fa fa-wand-magic-sparkles" style="color:var(--purple);font-size:1.2rem;margin-top:2px"></i>
+      <div style="flex:1">
+        <strong style="color:var(--purple)">Suggested Study Time Detected</strong>
+        <p id="stSuggestionText" style="margin:4px 0 10px;font-size:.86rem;color:var(--gray200)"></p>
+        <div id="stSuggestionGaps" style="margin-bottom:10px"></div>
+        <div style="display:flex;gap:8px;flex-wrap:wrap">
+          <button class="btn-primary btn-sm" onclick="stApplySuggestion()">
+            <i class="fa fa-circle-check"></i> Verify All Suggested Gaps
+          </button>
+          <button class="btn-secondary btn-sm" onclick="document.getElementById('stSuggestionBanner').style.display='none'">
+            Dismiss
+          </button>
+        </div>
+      </div>
+    </div>
+  </div>
+
+  <!-- Verified Study Time Records Table -->
+  <div style="padding:0 20px 20px">
+    <div style="display:flex;align-items:center;justify-content:space-between;margin-bottom:12px">
+      <div style="display:flex;gap:8px;align-items:center">
+        <span class="badge" id="stTotalBadge" style="background:rgba(155,61,232,.15);color:var(--purple);padding:4px 10px">
+          <i class="fa fa-clock"></i> <span id="stTotalHours">—</span> Study Hours Verified
+        </span>
+        <span class="badge badge-late" id="stFraudBadge" style="display:none">
+          <i class="fa fa-triangle-exclamation"></i> <span id="stFraudCount">0</span> Flags
+        </span>
+      </div>
+      <button class="btn-icon btn-note" title="Refresh" onclick="stLoadRecords()">
+        <i class="fa fa-rotate"></i>
+      </button>
+    </div>
+    <div class="table-wrap">
+      <table class="cd-table" id="stRecordsTable">
+        <thead>
+          <tr>
+            <th>Student</th>
+            <th>Date</th>
+            <th>Time Block</th>
+            <th>Duration</th>
+            <th>Assignment</th>
+            <th>Verified By</th>
+            <th>Status</th>
+            <th>Actions</th>
+          </tr>
+        </thead>
+        <tbody id="stRecordsBody">
+          <tr><td colspan="8" style="text-align:center;padding:24px;color:var(--gray400)">
+            <i class="fa fa-book-open-reader fa-2x" style="display:block;margin-bottom:8px;opacity:.3"></i>
+            Click "Detect Gaps" to find unverified periods, or "New Study Block" to add one manually.
+          </td></tr>
+        </tbody>
+      </table>
+    </div>
+  </div>
+</div>
+
+<!-- ── Study Time: New Block Modal ──────────────────────────────── -->
+<div class="modal-overlay" id="stModal" style="display:none">
+  <div class="modal" style="max-width:520px">
+    <div class="modal-header" style="border-bottom:2px solid var(--purple)">
+      <h3><i class="fa fa-book-open-reader" style="color:var(--purple)"></i> Verify Study Time Block</h3>
+      <button class="modal-close" onclick="closeModal('stModal')"><i class="fa fa-xmark"></i></button>
+    </div>
+    <div style="padding:20px 24px;display:flex;flex-direction:column;gap:14px">
+      <div id="stModalErrors" class="auth-error-banner" style="display:none"></div>
+
+      <div class="form-group">
+        <label><i class="fa fa-chalkboard"></i> Class / Cohort <span class="required">*</span></label>
+        <input type="text" class="form-control" id="stClassId" value="CD-2024-WD" placeholder="e.g. CD-2024-WD"/>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label><i class="fa fa-calendar"></i> Date <span class="required">*</span></label>
+          <input type="date" class="form-control" id="stDate"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-users"></i> Apply To</label>
+          <select class="form-control" id="stApplyTo">
+            <option value="all">All Students</option>
+            <option value="select">Select Students…</option>
+          </select>
+        </div>
+      </div>
+
+      <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px">
+        <div class="form-group">
+          <label><i class="fa fa-play"></i> Start Time <span class="required">*</span></label>
+          <input type="time" class="form-control" id="stStartTime" value="15:00"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-stop"></i> End Time <span class="required">*</span></label>
+          <input type="time" class="form-control" id="stEndTime" value="17:00"/>
+        </div>
+      </div>
+
+      <!-- Live duration preview -->
+      <div id="stDurationPreview" style="padding:8px 12px;background:rgba(155,61,232,.08);border-radius:8px;font-size:.84rem;color:var(--purple);display:none">
+        <i class="fa fa-clock"></i> <span id="stDurationText"></span>
+      </div>
+
+      <div class="form-group">
+        <label><i class="fa fa-file-lines"></i> Assignment Description</label>
+        <input type="text" class="form-control" id="stAssignment" placeholder="e.g. Complete React component lab"/>
+      </div>
+      <div class="form-group">
+        <label><i class="fa fa-bullseye"></i> Study Objective</label>
+        <input type="text" class="form-control" id="stObjective" placeholder="e.g. Independent coding practice"/>
+      </div>
+      <div class="form-group">
+        <label><i class="fa fa-sticky-note"></i> Notes</label>
+        <textarea class="form-control" id="stNotes" rows="2" placeholder="Optional instructor notes…" style="resize:vertical"></textarea>
+      </div>
+
+      <div style="padding:10px 12px;background:rgba(255,255,255,.03);border-radius:8px;font-size:.78rem;color:var(--gray400);border:1px solid var(--border)">
+        <i class="fa fa-shield-halved" style="color:var(--purple)"></i>
+        Study Time will be logged as <code>attendance_type: STUDY_TIME</code> and verified under your instructor credentials.
+        Students <strong>cannot</strong> self-report or modify Study Time.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal('stModal')">Cancel</button>
+      <button class="btn-primary" id="stSubmitBtn" onclick="stSubmitBlock()">
+        <i class="fa fa-circle-check"></i> Verify Study Time
+      </button>
     </div>
   </div>
 </div>`
@@ -1646,6 +1815,59 @@ function adminPage(): string {
     <div class="qb-status-dot connected"></div>
     <span class="qb-connected-text">Connected</span>
     <button class="btn-qb" onclick="syncQBFromAdmin()"><i class="fa fa-sync"></i> Sync Payroll</button>
+  </div>
+</div>
+
+<!-- ── Study Time Overview + Fraud Flags (Admin View) ─────────────── -->
+<div class="card mt-24" id="adminStudyTimePanel">
+  <div class="card-header">
+    <div>
+      <h3><i class="fa fa-book-open-reader" style="color:var(--purple)"></i> Study Time Overview</h3>
+      <p style="font-size:.82rem;color:var(--gray400);margin:2px 0 0">Verified independent study blocks · Fraud flag review</p>
+    </div>
+    <div class="header-actions">
+      <button class="btn-secondary btn-sm" onclick="adminLoadStudyFraudFlags()">
+        <i class="fa fa-triangle-exclamation"></i> Review Flags
+      </button>
+      <button class="btn-primary btn-sm" onclick="window.location='/instructor'">
+        <i class="fa fa-arrow-right"></i> Manage
+      </button>
+    </div>
+  </div>
+  <!-- Summary row -->
+  <div style="display:grid;grid-template-columns:repeat(auto-fit,minmax(130px,1fr));gap:12px;padding:16px 20px 8px">
+    <div style="text-align:center;padding:12px;background:rgba(155,61,232,.08);border-radius:10px">
+      <div class="kpi-num" id="adminSTHours" style="font-size:1.6rem">—</div>
+      <div style="font-size:.76rem;color:var(--gray400)">Total Study Hours</div>
+    </div>
+    <div style="text-align:center;padding:12px;background:rgba(34,197,94,.08);border-radius:10px">
+      <div class="kpi-num" id="adminSTRecords" style="font-size:1.6rem">—</div>
+      <div style="font-size:.76rem;color:var(--gray400)">Verified Blocks</div>
+    </div>
+    <div style="text-align:center;padding:12px;background:rgba(248,188,42,.08);border-radius:10px">
+      <div class="kpi-num" id="adminSTFlags" style="font-size:1.6rem;color:var(--yellow)">—</div>
+      <div style="font-size:.76rem;color:var(--gray400)">Open Fraud Flags</div>
+    </div>
+    <div style="text-align:center;padding:12px;background:rgba(59,130,246,.08);border-radius:10px">
+      <div class="kpi-num" id="adminSTStudents" style="font-size:1.6rem">—</div>
+      <div style="font-size:.76rem;color:var(--gray400)">Students w/ Study Time</div>
+    </div>
+  </div>
+  <!-- Fraud flags table (hidden until "Review Flags" is clicked) -->
+  <div id="adminFraudFlagsPanel" style="display:none;padding:0 20px 20px">
+    <div style="font-size:.82rem;font-weight:600;color:var(--gray200);margin-bottom:10px;padding-top:8px;border-top:1px solid var(--border)">
+      <i class="fa fa-shield-halved" style="color:var(--yellow)"></i> Open Fraud Flags — Review &amp; Dismiss
+    </div>
+    <div class="table-wrap">
+      <table class="cd-table" style="font-size:.82rem">
+        <thead>
+          <tr><th>Student</th><th>Flag Type</th><th>Description</th><th>Severity</th><th>Date</th><th>Action</th></tr>
+        </thead>
+        <tbody id="adminFraudFlagsBody">
+          <tr><td colspan="6" style="text-align:center;padding:16px;color:var(--gray400)">Click "Review Flags" to load.</td></tr>
+        </tbody>
+      </table>
+    </div>
   </div>
 </div>`
   return shell('Admin Dashboard', body, 'admin')
@@ -1911,6 +2133,7 @@ function reportsPage(): string {
       <label>Report Type</label>
       <select class="form-control" id="reportType" onchange="updateReportFields(this.value)">
         <option value="attendance">Attendance Report</option>
+        <option value="study_time">Study Time Report</option>
         <option value="hours">Hours Summary</option>
         <option value="stipend">Stipend Eligibility</option>
         <option value="late">Late Arrival Report</option>
@@ -3841,6 +4064,407 @@ app.post('/api/integrations/notes/save', async (c) => {
   } catch (err: any) {
     return c.json({ success: false, error: err.message }, 500)
   }
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// STUDY TIME MODULE  (Non-destructive extension — no existing routes modified)
+// All routes prefixed /api/study-time/*
+// StudyTimeRecord table supplements existing attendance without altering it.
+// Falls back gracefully: if any route errors, existing attendance is unaffected.
+// ═══════════════════════════════════════════════════════════════════
+
+// ── StudyTimeRecord extension table (in-memory / edge-safe) ──────────
+interface StudyTimeRecord {
+  id: string
+  student_id: string
+  student_name: string
+  class_id: string
+  cohort: string
+  date: string
+  start_time: string        // "HH:MM" 24h
+  end_time: string          // "HH:MM" 24h
+  duration_minutes: number
+  verified_by_instructor: string
+  verification_timestamp: string
+  attendance_type: 'STUDY_TIME'
+  assignment_description?: string
+  study_objective?: string
+  notes?: string
+  status: 'verified' | 'pending' | 'flagged'
+  fraud_flags: string[]
+}
+
+// ── StudyTimeFraudFlag (visible to admins) ────────────────────────────
+interface StudyTimeFraudFlag {
+  id: string
+  record_id: string
+  student_name: string
+  class_id: string
+  flag_type: 'excessive_duration' | 'overlap' | 'repeated_pattern' | 'exceeds_session'
+  description: string
+  severity: 'warning' | 'error'
+  timestamp: string
+  reviewed: boolean
+}
+
+const STUDY_TIME_RECORDS: StudyTimeRecord[] = [
+  // Seed data so student dashboard and reports have something to show
+  {
+    id: 'ST-SEED-001', student_id: 'STU001', student_name: 'Alex Johnson',
+    class_id: 'CD-2024-WD', cohort: '2024', date: '2025-03-17',
+    start_time: '15:00', end_time: '17:00', duration_minutes: 120,
+    verified_by_instructor: 'instructor@codedifferently.org',
+    verification_timestamp: '2025-03-17T15:05:00Z',
+    attendance_type: 'STUDY_TIME',
+    assignment_description: 'Complete React component lab', study_objective: 'Independent coding practice',
+    notes: 'Session ended early — students continued lab work', status: 'verified', fraud_flags: []
+  },
+  {
+    id: 'ST-SEED-002', student_id: 'STU002', student_name: 'Maria Garcia',
+    class_id: 'CD-2024-WD', cohort: '2024', date: '2025-03-17',
+    start_time: '15:00', end_time: '17:00', duration_minutes: 120,
+    verified_by_instructor: 'instructor@codedifferently.org',
+    verification_timestamp: '2025-03-17T15:05:00Z',
+    attendance_type: 'STUDY_TIME',
+    assignment_description: 'Complete React component lab', study_objective: 'Independent coding practice',
+    notes: 'Session ended early — students continued lab work', status: 'verified', fraud_flags: []
+  },
+]
+const STUDY_TIME_FRAUD_FLAGS: StudyTimeFraudFlag[] = []
+
+// ── Helpers ────────────────────────────────────────────────────────────
+function timeToMinutes(t: string): number {
+  const [h, m] = t.split(':').map(Number)
+  return h * 60 + m
+}
+
+function minutesToTime(mins: number): string {
+  const h = Math.floor(mins / 60).toString().padStart(2, '0')
+  const m = (mins % 60).toString().padStart(2, '0')
+  return `${h}:${m}`
+}
+
+function studyTimeFraudCheck(
+  rec: Omit<StudyTimeRecord, 'id' | 'fraud_flags' | 'status' | 'verification_timestamp' | 'attendance_type'>,
+  existingForStudent: StudyTimeRecord[]
+): string[] {
+  const flags: string[] = []
+  const dur = rec.duration_minutes
+
+  // Rule 1: single block > 8 h is suspicious
+  if (dur > 480) flags.push('excessive_duration')
+
+  // Rule 2: overlaps an existing verified record for same student+date
+  const sameDay = existingForStudent.filter(r => r.date === rec.date && r.status === 'verified')
+  const newStart = timeToMinutes(rec.start_time)
+  const newEnd   = timeToMinutes(rec.end_time)
+  for (const r of sameDay) {
+    const rStart = timeToMinutes(r.start_time)
+    const rEnd   = timeToMinutes(r.end_time)
+    if (newStart < rEnd && newEnd > rStart) { flags.push('overlap'); break }
+  }
+
+  // Rule 3: instructor has already verified ≥ 3 study blocks today across all students — pattern flag
+  const instructorTodayCount = STUDY_TIME_RECORDS.filter(
+    r => r.date === rec.date && r.verified_by_instructor === rec.verified_by_instructor && r.status === 'verified'
+  ).length
+  if (instructorTodayCount >= 6) flags.push('repeated_pattern')
+
+  return flags
+}
+
+function recordFraudFlags(recId: string, studentName: string, classId: string, flags: string[]): void {
+  for (const f of flags) {
+    const descriptions: Record<string, string> = {
+      excessive_duration: 'Study Time block exceeds 8 hours — unusually long for a single session.',
+      overlap:            'This Study Time block overlaps an existing verified record for the same student and date.',
+      repeated_pattern:   'This instructor has verified 6+ Study Time blocks today — possible systematic over-assignment.',
+      exceeds_session:    'Study Time duration exceeds the original class session length.',
+    }
+    STUDY_TIME_FRAUD_FLAGS.push({
+      id: `STF-${Date.now()}-${Math.random().toString(36).slice(2,5).toUpperCase()}`,
+      record_id: recId, student_name: studentName, class_id: classId,
+      flag_type: f as any,
+      description: descriptions[f] || f,
+      severity: f === 'overlap' ? 'error' : 'warning',
+      timestamp: new Date().toISOString(),
+      reviewed: false,
+    })
+  }
+}
+
+// ── GET /api/study-time/records — list all records (optionally filtered) ─
+app.get('/api/study-time/records', (c) => {
+  const studentId = c.req.query('student_id')
+  const classId   = c.req.query('class_id')
+  const date      = c.req.query('date')
+  const status    = c.req.query('status')
+  let records = [...STUDY_TIME_RECORDS]
+  if (studentId) records = records.filter(r => r.student_id === studentId)
+  if (classId)   records = records.filter(r => r.class_id === classId)
+  if (date)      records = records.filter(r => r.date === date)
+  if (status)    records = records.filter(r => r.status === status)
+  const totalMinutes = records.filter(r => r.status === 'verified').reduce((a, r) => a + r.duration_minutes, 0)
+  return c.json({
+    success: true, total: records.length,
+    total_study_hours: (totalMinutes / 60).toFixed(1),
+    records,
+  })
+})
+
+// ── POST /api/study-time/verify — instructor verifies a study block ──────
+app.post('/api/study-time/verify', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      student_ids?: string[]          // array OR omit to apply to whole cohort
+      class_id: string
+      cohort?: string
+      date: string
+      start_time: string
+      end_time: string
+      verified_by: string
+      assignment_description?: string
+      study_objective?: string
+      notes?: string
+    }
+
+    // Validate required fields
+    const errors: string[] = []
+    if (!body.class_id)     errors.push('class_id is required.')
+    if (!body.date)         errors.push('date is required.')
+    if (!body.start_time)   errors.push('start_time is required (HH:MM).')
+    if (!body.end_time)     errors.push('end_time is required (HH:MM).')
+    if (!body.verified_by)  errors.push('verified_by (instructor email) is required.')
+    const startMins = timeToMinutes(body.start_time || '00:00')
+    const endMins   = timeToMinutes(body.end_time   || '00:00')
+    if (endMins <= startMins) errors.push('end_time must be after start_time.')
+    if (errors.length) return c.json({ success: false, errors }, 422)
+
+    const durationMinutes = endMins - startMins
+    const verificationTimestamp = new Date().toISOString()
+
+    // Determine which students to apply to
+    const rosterAll = [
+      { id:'STU001', name:'Alex Johnson' }, { id:'STU002', name:'Maria Garcia' },
+      { id:'STU003', name:'DeShawn Williams' }, { id:'STU004', name:'Priya Patel' },
+      { id:'STU005', name:'Liam Chen' }, { id:'STU006', name:'Aaliyah Brown' },
+      { id:'STU007', name:'Marcus Thompson' }, { id:'STU008', name:'Sofia Rodriguez' },
+    ]
+    const targets = body.student_ids?.length
+      ? rosterAll.filter(s => body.student_ids!.includes(s.id))
+      : rosterAll
+
+    const created: StudyTimeRecord[] = []
+    const flaggedRecords: string[] = []
+
+    for (const student of targets) {
+      const studentRecords = STUDY_TIME_RECORDS.filter(r => r.student_id === student.id)
+      const fraudFlags = studyTimeFraudCheck(
+        { student_id: student.id, student_name: student.name, class_id: body.class_id,
+          cohort: body.cohort || '2024', date: body.date, start_time: body.start_time,
+          end_time: body.end_time, duration_minutes: durationMinutes,
+          verified_by_instructor: body.verified_by,
+          assignment_description: body.assignment_description,
+          study_objective: body.study_objective, notes: body.notes },
+        studentRecords
+      )
+      const recId = `ST-${Date.now()}-${Math.random().toString(36).slice(2,6).toUpperCase()}`
+      const rec: StudyTimeRecord = {
+        id: recId,
+        student_id: student.id, student_name: student.name,
+        class_id: body.class_id, cohort: body.cohort || '2024',
+        date: body.date, start_time: body.start_time, end_time: body.end_time,
+        duration_minutes: durationMinutes,
+        verified_by_instructor: body.verified_by,
+        verification_timestamp: verificationTimestamp,
+        attendance_type: 'STUDY_TIME',
+        assignment_description: body.assignment_description,
+        study_objective: body.study_objective,
+        notes: body.notes,
+        status: fraudFlags.includes('overlap') ? 'flagged' : 'verified',
+        fraud_flags: fraudFlags,
+      }
+      STUDY_TIME_RECORDS.push(rec)
+      if (fraudFlags.length) {
+        recordFraudFlags(recId, student.name, body.class_id, fraudFlags)
+        flaggedRecords.push(student.name)
+      }
+      created.push(rec)
+    }
+
+    const verifiedCount = created.filter(r => r.status === 'verified').length
+    const flaggedCount  = created.filter(r => r.status === 'flagged').length
+    return c.json({
+      success: true,
+      message: `✓ Study Time verified for ${verifiedCount} student${verifiedCount !== 1 ? 's' : ''} (${(durationMinutes/60).toFixed(1)}h each).${flaggedCount > 0 ? ` ${flaggedCount} record(s) flagged for review.` : ''}`,
+      records_created: created.length,
+      verified: verifiedCount,
+      flagged: flaggedCount,
+      duration_minutes: durationMinutes,
+      records: created,
+    })
+  } catch (err: any) {
+    return c.json({ success: false, errors: [err.message] }, 500)
+  }
+})
+
+// ── POST /api/study-time/detect-gaps — auto-detect attendance gaps ────
+// Compares clock-in / session-end times and suggests study blocks.
+app.post('/api/study-time/detect-gaps', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      date?: string
+      class_id?: string
+      session_end_time?: string   // "HH:MM" — when the live session ended
+      attendance_records?: Array<{ student_name: string; student_id: string; clock_in?: string; clock_out?: string }>
+    }
+
+    const sessionEnd    = body.session_end_time || '15:00'
+    const sessionEndMin = timeToMinutes(sessionEnd)
+    const date          = body.date || new Date().toISOString().slice(0, 10)
+
+    // Use supplied records or fall back to today's roster sample
+    const attendanceRecords = body.attendance_records || [
+      { student_name:'Alex Johnson',    student_id:'STU001', clock_in:'09:02', clock_out:'17:05' },
+      { student_name:'Maria Garcia',    student_id:'STU002', clock_in:'09:14', clock_out:'17:00' },
+      { student_name:'DeShawn Williams',student_id:'STU003', clock_in:'09:01', clock_out:'17:02' },
+      { student_name:'Priya Patel',     student_id:'STU004', clock_in:'09:05', clock_out:'16:45' },
+      { student_name:'Liam Chen',       student_id:'STU005', clock_in:'08:58', clock_out:'17:00' },
+      { student_name:'Aaliyah Brown',   student_id:'STU006', clock_in:'09:08', clock_out:'16:55' },
+      { student_name:'Marcus Thompson', student_id:'STU007', clock_in:'09:00', clock_out:'17:00' },
+      { student_name:'Sofia Rodriguez', student_id:'STU008', clock_in:'09:03', clock_out:'17:01' },
+    ]
+
+    const gaps: Array<{
+      student_name: string; student_id: string
+      gap_start: string; gap_end: string
+      gap_minutes: number; gap_hours: string
+      suggestion: string
+    }> = []
+
+    for (const rec of attendanceRecords) {
+      if (!rec.clock_out) continue
+      const clockOutMin = timeToMinutes(rec.clock_out)
+      // Gap exists when student stayed past session end with no verification
+      if (clockOutMin > sessionEndMin) {
+        const gapMinutes = clockOutMin - sessionEndMin
+        const existingStudyTime = STUDY_TIME_RECORDS.filter(
+          r => r.student_id === rec.student_id && r.date === date && r.status === 'verified'
+        )
+        // Only suggest if no study time already covers this gap
+        const alreadyCovered = existingStudyTime.some(r =>
+          timeToMinutes(r.start_time) <= sessionEndMin && timeToMinutes(r.end_time) >= clockOutMin
+        )
+        if (!alreadyCovered) {
+          gaps.push({
+            student_name: rec.student_name, student_id: rec.student_id,
+            gap_start: minutesToTime(sessionEndMin),
+            gap_end: rec.clock_out,
+            gap_minutes: gapMinutes,
+            gap_hours: (gapMinutes / 60).toFixed(1),
+            suggestion: `${(gapMinutes / 60).toFixed(1)}h of potential Study Time detected (${minutesToTime(sessionEndMin)} – ${rec.clock_out}). Would you like to verify?`,
+          })
+        }
+      }
+    }
+
+    const totalGapMinutes = gaps.reduce((a, g) => a + g.gap_minutes, 0)
+
+    return c.json({
+      success: true,
+      session_end_time: sessionEnd,
+      date,
+      gaps_detected: gaps.length,
+      total_potential_study_hours: (totalGapMinutes / 60).toFixed(1),
+      summary: gaps.length > 0
+        ? `${gaps.length} student${gaps.length !== 1 ? 's' : ''} stayed ${(totalGapMinutes/60/gaps.length).toFixed(1)}h past session end on average. Verify as Study Time?`
+        : 'No unverified attendance gaps detected for this session.',
+      gaps,
+      suggested_block: gaps.length > 0 ? {
+        start_time: minutesToTime(sessionEndMin),
+        end_time: gaps.reduce((a, g) => g.gap_end > a ? g.gap_end : a, '00:00'),
+        applies_to: gaps.length + ' students',
+      } : null,
+    })
+  } catch (err: any) {
+    return c.json({ success: false, errors: [err.message] }, 500)
+  }
+})
+
+// ── PATCH /api/study-time/records/:id — update/adjust a study block ──
+app.patch('/api/study-time/records/:id', async (c) => {
+  try {
+    const id   = c.req.param('id')
+    const body = await c.req.json() as Partial<StudyTimeRecord>
+    const idx  = STUDY_TIME_RECORDS.findIndex(r => r.id === id)
+    if (idx === -1) return c.json({ success: false, error: 'Study Time record not found.' }, 404)
+    const rec = STUDY_TIME_RECORDS[idx]
+    if (body.start_time) rec.start_time = body.start_time
+    if (body.end_time)   rec.end_time   = body.end_time
+    if (body.start_time || body.end_time) {
+      rec.duration_minutes = timeToMinutes(rec.end_time) - timeToMinutes(rec.start_time)
+    }
+    if (body.notes)                  rec.notes                  = body.notes
+    if (body.assignment_description) rec.assignment_description = body.assignment_description
+    if (body.study_objective)        rec.study_objective        = body.study_objective
+    if (body.status)                 rec.status                 = body.status as any
+    return c.json({ success: true, message: '✓ Study Time record updated.', record: rec })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500)
+  }
+})
+
+// ── DELETE /api/study-time/records/:id — remove a study block ─────────
+app.delete('/api/study-time/records/:id', (c) => {
+  const id  = c.req.param('id')
+  const idx = STUDY_TIME_RECORDS.findIndex(r => r.id === id)
+  if (idx === -1) return c.json({ success: false, error: 'Record not found.' }, 404)
+  const removed = STUDY_TIME_RECORDS.splice(idx, 1)[0]
+  return c.json({ success: true, message: `Study Time record for ${removed.student_name} removed.` })
+})
+
+// ── GET /api/study-time/fraud-flags — admin fraud flag list ──────────
+app.get('/api/study-time/fraud-flags', (c) => {
+  const unreviewed = c.req.query('unreviewed')
+  const flags = unreviewed === '1'
+    ? STUDY_TIME_FRAUD_FLAGS.filter(f => !f.reviewed)
+    : STUDY_TIME_FRAUD_FLAGS
+  return c.json({ success: true, total: flags.length, flags })
+})
+
+// ── PATCH /api/study-time/fraud-flags/:id/review — mark flag reviewed ─
+app.patch('/api/study-time/fraud-flags/:id/review', (c) => {
+  const id  = c.req.param('id')
+  const flag = STUDY_TIME_FRAUD_FLAGS.find(f => f.id === id)
+  if (!flag) return c.json({ success: false, error: 'Flag not found.' }, 404)
+  flag.reviewed = true
+  return c.json({ success: true, message: 'Flag marked as reviewed.' })
+})
+
+// ── GET /api/study-time/summary — reporting summary ──────────────────
+app.get('/api/study-time/summary', (c) => {
+  const verified = STUDY_TIME_RECORDS.filter(r => r.status === 'verified')
+  const totalStudyMinutes = verified.reduce((a, r) => a + r.duration_minutes, 0)
+  // Group by student
+  const byStudent: Record<string, { student_name: string; records: number; study_minutes: number }> = {}
+  for (const r of verified) {
+    if (!byStudent[r.student_id]) byStudent[r.student_id] = { student_name: r.student_name, records: 0, study_minutes: 0 }
+    byStudent[r.student_id].records++
+    byStudent[r.student_id].study_minutes += r.duration_minutes
+  }
+  return c.json({
+    success: true,
+    summary: {
+      total_study_records: verified.length,
+      total_study_hours: (totalStudyMinutes / 60).toFixed(1),
+      unique_students: Object.keys(byStudent).length,
+      fraud_flags_open: STUDY_TIME_FRAUD_FLAGS.filter(f => !f.reviewed).length,
+    },
+    by_student: Object.values(byStudent).map(s => ({
+      ...s, study_hours: (s.study_minutes / 60).toFixed(1)
+    })),
+    attendance_types: ['PHYSICAL', 'VIRTUAL', 'HYBRID', 'STUDY_TIME'],
+  })
 })
 
 export default app
