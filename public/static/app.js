@@ -161,12 +161,16 @@ if (document.getElementById('loginForm')) {
   // Clear validation errors on input
   document.getElementById('emailInput')?.addEventListener('input', clearLoginErrors);
   document.getElementById('pwInput')?.addEventListener('input', clearLoginErrors);
-  // If user already has a stored role session, redirect to their dashboard
-  const storedRole = sessionStorage.getItem('cd_role');
-  if (storedRole && ['student','instructor','admin'].includes(storedRole)) {
-    const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
-    if (document.referrer && document.referrer !== window.location.href) {
-      window.location.replace(dest[storedRole]);
+  // Auto-redirect only if session exists AND this is NOT a logout landing (_lo param)
+  const _params = new URLSearchParams(window.location.search);
+  const _isLogoutLanding = _params.has('_lo');
+  if (!_isLogoutLanding) {
+    const storedRole = sessionStorage.getItem('cd_role');
+    if (storedRole && ['student','instructor','admin'].includes(storedRole)) {
+      const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
+      if (document.referrer && document.referrer !== window.location.href) {
+        window.location.replace(dest[storedRole]);
+      }
     }
   }
 }
@@ -194,26 +198,34 @@ function togglePwField(inputId, iconId) {
    AUTH SYSTEM — LOGOUT, GUARD, ROLE VALIDATION, SESSION
    ══════════════════════════════════════════════════════ */
 
-// ── LOGOUT (fixes the logout failure bug) ────────────────────────
-// Clears ALL auth state from sessionStorage and localStorage,
-// then hard-navigates to /logout (which redirects to /login).
-// This ensures the page is not served from bfcache.
-async function performLogout(e) {
-  if (e) e.preventDefault();
+// ── LOGOUT — bulletproof implementation ──────────────────────────
+// Strategy:
+//  1. Synchronously wipe ALL storage FIRST (before any navigation)
+//  2. Fire server ack (non-blocking)
+//  3. Use window.location.replace (not href) to /login?_lo=1
+//     The ?_lo=1 query param busts bfcache and signals the login
+//     page NOT to auto-redirect even if any stale key survived.
+//  4. Fallback: if replace throws, reload to root
+function performLogout(e) {
+  if (e) { e.preventDefault(); e.stopPropagation(); }
+
+  // Step 1 — Wipe storage synchronously (must happen BEFORE navigation)
+  try { sessionStorage.clear(); } catch(_) {}
+  try { sessionStorage.removeItem('cd_role'); } catch(_) {}
+  try { sessionStorage.removeItem('cd_session_start'); } catch(_) {}
+  try { sessionStorage.removeItem('cd_auth_pending'); } catch(_) {}
+  try { sessionStorage.removeItem('cd_user_email'); } catch(_) {}
+  try { sessionStorage.removeItem('cd_first_login'); } catch(_) {}
+  // Also clear localStorage auth keys if any leaked there
+  try { localStorage.removeItem('cd_role'); } catch(_) {}
+
+  // Step 2 — Non-blocking server signal
+  try { fetch('/api/auth/logout', { method: 'POST', keepalive: true }).catch(() => {}); } catch(_) {}
+
+  // Step 3 — Replace (no back-button) to login with cache-bust param
   try {
-    // 1. Signal server (fire-and-forget, no need to await)
-    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
-    // 2. Clear ALL session and auth state
-    sessionStorage.removeItem('cd_role');
-    sessionStorage.removeItem('cd_session_start');
-    sessionStorage.removeItem('cd_auth_pending');
-    sessionStorage.removeItem('cd_user_email');
-    sessionStorage.removeItem('cd_first_login');
-    sessionStorage.clear();   // Belt-and-suspenders: clear everything
-    // 3. Hard navigate — bypasses bfcache, ensures login page is fresh
-    window.location.href = '/logout';
+    window.location.replace('/login?_lo=' + Date.now());
   } catch(err) {
-    // Fail-safe: still navigate even if something above throws
     window.location.href = '/login';
   }
 }
@@ -222,6 +234,7 @@ async function performLogout(e) {
 // Called on every protected dashboard page.
 // If no valid session exists, redirect to /login immediately.
 // Role mismatch → redirect to the correct dashboard.
+// IMPORTANT: Skip guard entirely on /login and /logout pages.
 const AUTH_PROTECTED = ['/student', '/instructor', '/admin', '/profile', '/reports', '/settings', '/geofence', '/hybrid', '/admin/users'];
 const ROLE_ROUTES = {
   student:    ['/student', '/profile'],
@@ -233,6 +246,13 @@ const ROLE_HOME = { student: '/student', instructor: '/instructor', admin: '/adm
 function runAuthGuard() {
   try {
     const path = window.location.pathname;
+    const params = new URLSearchParams(window.location.search);
+
+    // NEVER guard the login or logout pages — skip immediately
+    if (path === '/login' || path === '/logout') return;
+    // If arriving at login via logout (_lo param), skip auto-redirect too
+    if (params.has('_lo')) return;
+
     // Only guard protected paths
     if (!AUTH_PROTECTED.some(p => path.startsWith(p))) return;
 

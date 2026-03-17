@@ -1076,7 +1076,7 @@ function shell(title: string, body: string, role: string = ''): string {
         <a href="/reports" class="nav-link"><i class="fa fa-chart-bar"></i> Reports</a>
         <a href="/geofence" class="nav-link"><i class="fa fa-map-location-dot"></i> Geofence</a>
         <a href="/settings" class="nav-link"><i class="fa fa-gear"></i> Settings</a>` : ''}
-      <a href="/login" class="nav-link nav-logout"><i class="fa fa-right-from-bracket"></i> Logout</a>
+      <a href="#" class="nav-link nav-logout" onclick="performLogout(event)"><i class="fa fa-right-from-bracket"></i> Logout</a>
     </div>
     <button class="cd-hamburger" onclick="toggleMenu()"><i class="fa fa-bars"></i></button>
   </nav>
