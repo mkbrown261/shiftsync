@@ -41,6 +41,404 @@ app.get('/profile', (c) => c.html(profilePage()))
 app.get('/reports', (c) => c.html(reportsPage()))
 app.get('/settings', (c) => c.html(settingsPage()))
 app.get('/geofence', (c) => c.html(geofencePage()))
+app.get('/hybrid', (c) => c.html(hybridPage()))
+
+// ═══════════════════════════════════════════════════════════════════
+// HYBRID INTELLIGENCE PLATFORM APIs  (Enhancement Layer — non-destructive)
+// All routes prefixed /api/hybrid/* — no existing routes modified
+// ═══════════════════════════════════════════════════════════════════
+
+// ── Attendance Mode Controller ───────────────────────────────────────
+// POST /api/hybrid/session/create  — create a session with mode
+app.post('/api/hybrid/session/create', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      class_id: string; session_type: 'physical'|'virtual'|'hybrid'
+      start_time: string; instructor_id: string; duration_minutes?: number
+      virtual_link?: string; checkpoint_minutes?: number
+    }
+    const sessionId = `SES-${Date.now()}-${Math.random().toString(36).slice(2,7).toUpperCase()}`
+    return c.json({
+      success: true,
+      session: {
+        id: sessionId,
+        class_id: body.class_id,
+        session_type: body.session_type,
+        start_time: body.start_time || new Date().toISOString(),
+        instructor_id: body.instructor_id,
+        duration_minutes: body.duration_minutes || 480,
+        virtual_link: body.virtual_link || null,
+        checkpoint_minutes: body.checkpoint_minutes || 20,
+        status: 'active',
+        created_at: new Date().toISOString()
+      },
+      message: `${body.session_type} session created. Verification checkpoint at ${body.checkpoint_minutes || 20} min.`
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// GET /api/hybrid/session/:id — get session details + live stats
+app.get('/api/hybrid/session/:id', (c) => {
+  const id = c.req.param('id')
+  return c.json({
+    session: {
+      id, status: 'active', session_type: 'hybrid',
+      start_time: new Date(Date.now() - 25 * 60000).toISOString(),
+      checkpoint_reached: true, checkpoint_minutes: 20,
+      physical_count: 5, virtual_count: 3, total_enrolled: 8
+    }
+  })
+})
+
+// ── VirtualPresenceService ────────────────────────────────────────────
+// POST /api/hybrid/virtual/verify  — verify participants from meeting data
+app.post('/api/hybrid/virtual/verify', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      session_id: string; platform: string
+      participants?: Array<{email:string; name:string; join_time:string; leave_time?:string; duration_minutes?:number}>
+      min_duration_minutes?: number
+    }
+    const minDur  = body.min_duration_minutes ?? 15
+    const roster  = [
+      'alex@codedifferently.org','maria@codedifferently.org','deshawn@codedifferently.org',
+      'priya@codedifferently.org','liam@codedifferently.org','aaliyah@codedifferently.org',
+      'marcus@codedifferently.org','sofia@codedifferently.org'
+    ]
+    // Use supplied participants or generate sample data
+    const participants = body.participants || [
+      { email:'alex@codedifferently.org',   name:'Alex Johnson',    join_time:'09:01', duration_minutes: 62 },
+      { email:'liam@codedifferently.org',   name:'Liam Chen',       join_time:'08:58', duration_minutes: 65 },
+      { email:'deshawn@codedifferently.org',name:'DeShawn Williams', join_time:'09:03', duration_minutes: 60 },
+      { email:'maria@codedifferently.org',  name:'Maria Garcia',    join_time:'09:18', duration_minutes: 45 },
+      { email:'sofia@codedifferently.org',  name:'Sofia Rodriguez', join_time:'09:02', duration_minutes: 8  }, // too short
+      { email:'unknown@gmail.com',          name:'Unknown User',    join_time:'09:05', duration_minutes: 55 }, // not in roster
+    ]
+    const records = participants.map(p => {
+      const inRoster   = roster.includes(p.email)
+      const sufficient = (p.duration_minutes || 0) >= minDur
+      const late        = p.join_time > '09:10'
+      return {
+        email: p.email, name: p.name,
+        join_time: p.join_time, leave_time: p.leave_time || null,
+        duration_minutes: p.duration_minutes || 0,
+        matched_student: inRoster,
+        sufficient_duration: sufficient,
+        status: !inRoster ? 'unmatched' : !sufficient ? 'insufficient_duration' : late ? 'late' : 'present',
+        verification_score: inRoster && sufficient ? (late ? 0.75 : 0.97) : 0.2
+      }
+    })
+    const present   = records.filter(r => r.status === 'present' || r.status === 'late')
+    const flagged   = records.filter(r => r.status === 'insufficient_duration' || r.status === 'unmatched')
+    return c.json({
+      success: true, session_id: body.session_id, platform: body.platform,
+      min_duration_minutes: minDur,
+      summary: {
+        total_participants: participants.length, present_count: present.length,
+        late_count: records.filter(r=>r.status==='late').length,
+        flagged_count: flagged.length, unmatched_count: records.filter(r=>r.status==='unmatched').length
+      },
+      records, verified_at: new Date().toISOString()
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// GET /api/hybrid/virtual/platforms — list supported platforms
+app.get('/api/hybrid/virtual/platforms', (c) => {
+  return c.json({
+    platforms: [
+      { id:'google_meet', name:'Google Meet', status:'integrated', icon:'fa-video',
+        auth_url:'https://accounts.google.com/o/oauth2/auth', scope:'https://www.googleapis.com/auth/calendar.readonly https://www.googleapis.com/auth/admin.reports.readonly',
+        api_endpoint:'https://admin.googleapis.com/admin/reports/v1/activity/users/all/applications/meet' },
+      { id:'zoom', name:'Zoom', status:'coming_soon', icon:'fa-video' },
+      { id:'teams', name:'Microsoft Teams', status:'coming_soon', icon:'fa-microsoft' },
+    ]
+  })
+})
+
+// ── AttendanceIntelligenceEngine ──────────────────────────────────────
+// POST /api/hybrid/ai/analyze  — analyze attendance dataset before finalizing
+app.post('/api/hybrid/ai/analyze', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      session_id: string; session_type: string
+      physical_records?: any[]; virtual_records?: any[]
+      apiKey?: string; baseUrl?: string
+    }
+    // Build merged dataset
+    const physical = body.physical_records || [
+      { name:'Alex Johnson',    type:'physical', status:'present', time:'09:02', verified:true },
+      { name:'Maria Garcia',    type:'physical', status:'late',    time:'09:14', verified:true },
+      { name:'DeShawn Williams',type:'physical', status:'present', time:'09:01', verified:true },
+      { name:'Priya Patel',     type:'physical', status:'absent',  time:null,   verified:false },
+      { name:'Marcus Thompson', type:'physical', status:'present', time:'09:00', verified:true },
+    ]
+    const virtual = body.virtual_records || [
+      { name:'Liam Chen',      type:'virtual', status:'present', duration:65, join:'08:58', verified:true },
+      { name:'Aaliyah Brown',  type:'virtual', status:'late',    duration:45, join:'09:22', verified:true },
+      { name:'Sofia Rodriguez',type:'virtual', status:'flagged', duration:8,  join:'09:02', verified:false, flag:'insufficient_duration' },
+    ]
+    const all       = [...physical, ...virtual]
+    const present   = all.filter(r => r.status==='present').length
+    const late      = all.filter(r => r.status==='late').length
+    const absent    = all.filter(r => r.status==='absent').length
+    const flagged   = all.filter(r => r.status==='flagged').length
+    const total     = all.length
+
+    // Try AI enhancement if key provided
+    let aiSummary = null
+    if (body.apiKey) {
+      try {
+        const url = ((body.baseUrl || 'https://www.genspark.ai/api/llm_proxy/v1') as string).replace(/\/$/, '') + '/chat/completions'
+        const prompt = `You are AttendanceIntelligenceEngine for Code Differently. Analyze this attendance data and return JSON only.
+DATA: ${JSON.stringify({ session_type: body.session_type, total, present, late, absent, flagged, records: all })}
+Return: {"summary":"<2 sentence summary>","anomalies":[{"student":"<name>","issue":"<desc>","severity":"warning|error"}],"recommendation":"<action>","confidence":0.0-1.0}`
+        const res = await fetch(url, {
+          method:'POST', headers:{'Content-Type':'application/json','Authorization':`Bearer ${body.apiKey}`},
+          body: JSON.stringify({ model:'gpt-4o-mini', messages:[{role:'user',content:prompt}], temperature:0.2, max_tokens:600 })
+        })
+        if (res.ok) {
+          const d: any = await res.json()
+          const raw = (d.choices[0].message.content as string).replace(/```json\n?/g,'').replace(/```\n?/g,'').trim()
+          aiSummary = JSON.parse(raw)
+        }
+      } catch { /* fall through to local analysis */ }
+    }
+    // Local analysis fallback
+    const localSummary = {
+      summary: `We detected ${present} students present, ${late} joined late, ${absent} absent, ${flagged} flagged for review.`,
+      anomalies: [
+        ...virtual.filter((r:any)=>r.flag==='insufficient_duration').map((r:any) => ({ student:r.name, issue:'Virtual session too short (< 15 min)', severity:'warning' })),
+        ...physical.filter((r:any)=>r.status==='absent').map((r:any)=>({ student:r.name, issue:'No clock-in recorded — physically absent', severity:'error' })),
+        ...all.filter((r:any)=>r.status==='late').map((r:any)=>({ student:r.name, issue:`Late arrival (${r.time||r.join})`, severity:'warning' })),
+      ],
+      recommendation: flagged > 0 ? `Review ${flagged} flagged record(s) before confirming` : 'Data looks clean — ready to confirm',
+      confidence: flagged === 0 ? 0.97 : 0.78
+    }
+    return c.json({
+      success: true, session_id: body.session_id,
+      analysis: aiSummary || localSummary,
+      ai_enhanced: !!aiSummary,
+      proposal: {
+        total_students: total, present, late, absent, flagged,
+        physical_count: physical.filter((r:any)=>r.status!=='absent').length,
+        virtual_count: virtual.filter((r:any)=>r.status!=='flagged').length,
+        records: all, ready_to_confirm: flagged === 0
+      },
+      analyzed_at: new Date().toISOString()
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 500)
+  }
+})
+
+// POST /api/hybrid/ai/confirm  — instructor confirms the AI proposal
+app.post('/api/hybrid/ai/confirm', async (c) => {
+  try {
+    const body = await c.req.json() as { session_id: string; action: 'confirm'|'modify'|'rerun'; modifications?: any[] }
+    return c.json({
+      success: true, session_id: body.session_id, action: body.action,
+      message: body.action === 'confirm' ? 'Attendance finalized and saved' :
+               body.action === 'modify'  ? 'Records updated — please re-confirm' :
+               'Re-running verification…',
+      finalized_at: body.action === 'confirm' ? new Date().toISOString() : null
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// ── FraudDetectionService ─────────────────────────────────────────────
+// POST /api/hybrid/fraud/analyze — scan session for suspicious patterns
+app.post('/api/hybrid/fraud/analyze', async (c) => {
+  try {
+    const body = await c.req.json() as { session_id: string; records?: any[] }
+    // Sample fraud analysis (production: ML model or AI)
+    const flags = [
+      { id:'F001', student_id:'EMP006', student:'Aaliyah Brown',  flag_type:'short_session',
+        flag_description:'Virtual session only 8 min — below 15 min threshold',
+        severity:'warning', timestamp: new Date().toISOString(), auto_action:'none' },
+      { id:'F002', student_id:'EMP009', student:'Unknown User',   flag_type:'unmatched_account',
+        flag_description:'Participant email unknown@gmail.com not in student roster',
+        severity:'error', timestamp: new Date().toISOString(), auto_action:'excluded' },
+      { id:'F003', student_id:'EMP002', student:'Maria Garcia',   flag_type:'late_pattern',
+        flag_description:'3rd consecutive late arrival — pattern detected',
+        severity:'info', timestamp: new Date().toISOString(), auto_action:'none' },
+    ]
+    return c.json({
+      success: true, session_id: body.session_id,
+      total_flags: flags.length,
+      flags_by_severity: { error: flags.filter(f=>f.severity==='error').length, warning: flags.filter(f=>f.severity==='warning').length, info: flags.filter(f=>f.severity==='info').length },
+      flags, analyzed_at: new Date().toISOString(),
+      note: 'Flags are for instructor review only — no automatic penalties applied'
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// GET /api/hybrid/fraud/flags/:session_id — get flags for a session
+app.get('/api/hybrid/fraud/flags/:session_id', (c) => {
+  const sid = c.req.param('session_id')
+  return c.json({ session_id: sid, flags: [], total: 0, message: 'No flags for this session' })
+})
+
+// ── Hybrid Merge Engine ───────────────────────────────────────────────
+// POST /api/hybrid/merge — merge physical + virtual attendance datasets
+app.post('/api/hybrid/merge', async (c) => {
+  try {
+    const body = await c.req.json() as { session_id: string; physical: any[]; virtual: any[] }
+    const merged = new Map<string, any>()
+    // Physical records take priority for in-person status
+    for (const r of (body.physical || [])) {
+      merged.set(r.name, { ...r, attendance_source: 'physical' })
+    }
+    // Virtual records fill in or supplement
+    for (const r of (body.virtual || [])) {
+      if (!merged.has(r.name)) {
+        merged.set(r.name, { ...r, attendance_source: 'virtual' })
+      } else {
+        const existing = merged.get(r.name)!
+        // If physical absent but virtual present, use virtual
+        if (existing.status === 'absent' && (r.status === 'present' || r.status === 'late')) {
+          merged.set(r.name, { ...r, attendance_source: 'virtual_override', physical_status: existing.status })
+        }
+      }
+    }
+    const records  = Array.from(merged.values())
+    const present  = records.filter(r=>r.status==='present').length
+    const late     = records.filter(r=>r.status==='late').length
+    const absent   = records.filter(r=>r.status==='absent').length
+    const flagged  = records.filter(r=>r.status==='flagged').length
+    return c.json({
+      success: true, session_id: body.session_id,
+      merged_records: records,
+      summary: { total: records.length, present, late, absent, flagged,
+        physical_only: records.filter(r=>r.attendance_source==='physical').length,
+        virtual_only:  records.filter(r=>r.attendance_source==='virtual').length,
+        virtual_override: records.filter(r=>r.attendance_source==='virtual_override').length
+      },
+      merged_at: new Date().toISOString()
+    })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// ── Smart Attendance AI Assistant ─────────────────────────────────
+// POST /api/hybrid/smart-assistant  — real-time analysis + suggestions
+app.post('/api/hybrid/smart-assistant', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      query: string; session_type?: string
+      physical_records?: any[]; virtual_records?: any[]
+      apiKey?: string; baseUrl?: string
+    }
+    const phys    = body.physical_records || []
+    const virt    = body.virtual_records  || []
+    const all     = [...phys, ...virt]
+    const present = all.filter(r => r.status === 'present').length
+    const late    = all.filter(r => r.status === 'late').length
+    const absent  = all.filter(r => r.status === 'absent').length
+    const flagged = all.filter(r => r.status === 'flagged' || r.status === 'insufficient_duration').length
+
+    // Attempt AI
+    let reply = ''
+    if (body.apiKey) {
+      try {
+        const url = ((body.baseUrl || 'https://www.genspark.ai/api/llm_proxy/v1') as string).replace(/\/$/, '') + '/chat/completions'
+        const systemPrompt = `You are a Smart Attendance AI Assistant for Code Differently. Provide concise 2-3 sentence insights. Always note recommendations require instructor approval.`
+        const res = await fetch(url, {
+          method: 'POST',
+          headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${body.apiKey}` },
+          body: JSON.stringify({
+            model: 'gpt-4o-mini',
+            messages: [
+              { role: 'system', content: systemPrompt },
+              { role: 'user', content: `Data: ${JSON.stringify({ session_type: body.session_type, present, late, absent, flagged, records: all })}\n\nQuestion: ${body.query}` }
+            ],
+            temperature: 0.3, max_tokens: 300
+          })
+        })
+        if (res.ok) {
+          const d: any = await res.json()
+          reply = d.choices?.[0]?.message?.content || ''
+        }
+      } catch { /* fall through */ }
+    }
+
+    // Local fallback
+    if (!reply) {
+      const q = body.query.toLowerCase()
+      if (q.includes('summar'))         reply = `Session has ${present} present, ${late} late, ${absent} absent, ${flagged} flagged. Attendance rate: ${Math.round(present/(all.length||1)*100)}%. ${flagged > 0 ? 'Review flagged records before confirming.' : 'Ready to confirm.'}`
+      else if (q.includes('miss'))      reply = `${absent} student(s) have no clock-in record. Recommend contacting them or marking as excused if appropriate.`
+      else if (q.includes('stipend'))   reply = `Students with lates or absences: ${all.filter(r=>r.status==='late'||r.status==='absent').map((r:any)=>r.name).join(', ') || 'none'}. Monitor weekly to assess stipend impact.`
+      else if (q.includes('virtual'))   reply = `Physical: ${phys.filter((r:any)=>r.status!=='absent').length}/${phys.length} attended. Virtual: ${virt.filter((r:any)=>r.status==='present'||r.status==='late').length}/${virt.length} attended. Virtual sessions have slightly higher late rate.`
+      else if (q.includes('fraud'))     reply = `${flagged} records flagged for review. All flags are informational only — no automatic penalties applied. Instructor must review and decide.`
+      else                              reply = `Current session (${body.session_type || 'hybrid'}): ${present} present, ${late} late, ${absent} absent. Ask me about summaries, missing entries, stipend risk, or virtual vs physical.`
+    }
+
+    return c.json({ success: true, reply, ai_enhanced: !!body.apiKey, timestamp: new Date().toISOString() })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// ── Hybrid Report Intelligence — metrics endpoint ────────────────
+// GET /api/hybrid/report-metrics — aggregated metrics for ReportIntelligenceService
+app.get('/api/hybrid/report-metrics', (c) => {
+  return c.json({
+    success: true,
+    metrics: {
+      physical_pct: 68, virtual_pct: 32,
+      late_rate: 14, early_departure_rate: 8,
+      fraud_flags: 3, attendance_trend: +4.2,
+      by_mode: {
+        physical: { attendance_rate: 91.2, late_rate: 12.4, stipend_eligible: 5, total: 8 },
+        virtual:  { attendance_rate: 87.5, late_rate: 17.1, stipend_eligible: 4, total: 6 }
+      },
+      insights: [
+        { type: 'warning', message: 'Virtual participants show 17% higher late rate — consider join reminders' },
+        { type: 'alert',   message: '3 fraud flags detected in virtual sessions — review before stipend decisions' },
+        { type: 'info',    message: 'Average virtual session duration (-14 min vs physical) — monitor engagement' }
+      ]
+    },
+    generated_at: new Date().toISOString()
+  })
+})
+
+// GET /api/hybrid/data-schema — return extension table schemas (read-only docs)
+app.get('/api/hybrid/data-schema', (c) => {
+  return c.json({
+    extension_tables: {
+      AttendanceSession: {
+        description: 'Tracks each class session with mode configuration',
+        fields: { id:'string PK', class_id:'string', session_type:'physical|virtual|hybrid',
+          start_time:'ISO datetime', verification_checkpoint:'integer (minutes)', status:'active|completed|cancelled',
+          virtual_link:'string|null', instructor_id:'string', duration_minutes:'integer' }
+      },
+      VirtualPresenceRecord: {
+        description: 'Logs each virtual participant\'s presence signals',
+        fields: { id:'string PK', student_id:'string FK', session_id:'string FK',
+          email:'string', join_time:'ISO datetime', leave_time:'ISO datetime|null',
+          presence_duration:'integer (minutes)', platform:'google_meet|zoom|teams',
+          verification_score:'float 0-1', status:'present|late|absent|flagged' }
+      },
+      FraudFlag: {
+        description: 'Records suspicious attendance patterns for instructor review',
+        fields: { id:'string PK', student_id:'string FK', session_id:'string FK',
+          flag_type:'short_session|unmatched_account|late_pattern|location_spoof|duplicate_login',
+          flag_description:'string', severity:'info|warning|error',
+          timestamp:'ISO datetime', resolved:'boolean', resolved_by:'string|null' }
+      }
+    },
+    note: 'These tables extend the existing attendance system. Core tables remain unchanged.'
+  })
+})
 
 // ═══════════════════════════════════════════════════════════════════
 // LOCATION VERIFICATION API  (Enhancement Layer — non-destructive)
@@ -483,9 +881,11 @@ function shell(title: string, body: string, role: string = ''): string {
       ${role === 'student' ? `<a href="/student" class="nav-link"><i class="fa fa-clock"></i> Clock In/Out</a>
         <a href="/profile" class="nav-link"><i class="fa fa-user"></i> My Profile</a>` : ''}
       ${role === 'instructor' ? `<a href="/instructor" class="nav-link"><i class="fa fa-list-check"></i> Attendance</a>
+        <a href="/hybrid" class="nav-link"><i class="fa fa-layer-group"></i> Hybrid</a>
         <a href="/reports" class="nav-link"><i class="fa fa-chart-bar"></i> Reports</a>` : ''}
       ${role === 'admin' ? `<a href="/admin" class="nav-link"><i class="fa fa-gauge"></i> Dashboard</a>
         <a href="/instructor" class="nav-link"><i class="fa fa-list-check"></i> Attendance</a>
+        <a href="/hybrid" class="nav-link"><i class="fa fa-layer-group"></i> Hybrid</a>
         <a href="/reports" class="nav-link"><i class="fa fa-chart-bar"></i> Reports</a>
         <a href="/geofence" class="nav-link"><i class="fa fa-map-location-dot"></i> Geofence</a>
         <a href="/settings" class="nav-link"><i class="fa fa-gear"></i> Settings</a>` : ''}
@@ -497,9 +897,11 @@ function shell(title: string, body: string, role: string = ''): string {
     ${role === 'student' ? `<a href="/student"><i class="fa fa-clock"></i> Clock In/Out</a>
       <a href="/profile"><i class="fa fa-user"></i> My Profile</a>` : ''}
     ${role === 'instructor' ? `<a href="/instructor"><i class="fa fa-list-check"></i> Attendance</a>
+      <a href="/hybrid"><i class="fa fa-layer-group"></i> Hybrid</a>
       <a href="/reports"><i class="fa fa-chart-bar"></i> Reports</a>` : ''}
     ${role === 'admin' ? `<a href="/admin"><i class="fa fa-gauge"></i> Dashboard</a>
       <a href="/instructor"><i class="fa fa-list-check"></i> Attendance</a>
+      <a href="/hybrid"><i class="fa fa-layer-group"></i> Hybrid</a>
       <a href="/reports"><i class="fa fa-chart-bar"></i> Reports</a>
       <a href="/geofence"><i class="fa fa-map-location-dot"></i> Geofence</a>
       <a href="/settings"><i class="fa fa-gear"></i> Settings</a>` : ''}
@@ -1325,6 +1727,9 @@ function reportsPage(): string {
         <option value="stipend">Stipend Eligibility</option>
         <option value="late">Late Arrival Report</option>
         <option value="payroll">Payroll Export (QuickBooks)</option>
+        <option value="hybrid">Hybrid Mode Analysis</option>
+        <option value="fraud">Fraud Flag Report</option>
+        <option value="virtual_physical">Virtual vs Physical Participation</option>
       </select>
     </div>
     <div class="form-group">
@@ -1348,6 +1753,110 @@ function reportsPage(): string {
     <div class="report-actions">
       <button class="btn-secondary" onclick="previewReport()"><i class="fa fa-eye"></i> Preview</button>
       <button class="btn-primary" onclick="generateReport()"><i class="fa fa-file-export"></i> Generate &amp; Export</button>
+    </div>
+  </div>
+</div>
+
+<!-- ReportIntelligenceService — Hybrid Attendance Metrics -->
+<div class="card mt-24" id="hybridMetricsPanel">
+  <div class="card-header">
+    <h3><i class="fa fa-layer-group"></i> ReportIntelligenceService — Hybrid Metrics</h3>
+    <div class="header-actions">
+      <span class="badge badge-ai">Intelligence</span>
+      <button class="btn-secondary btn-sm" onclick="loadHybridMetrics()">
+        <i class="fa fa-rotate"></i> Refresh
+      </button>
+    </div>
+  </div>
+
+  <!-- Metric Cards Row -->
+  <div class="hm-metric-row" id="hmMetricRow">
+    <div class="hm-metric-card">
+      <div class="hm-metric-icon green"><i class="fa fa-location-dot"></i></div>
+      <div><div class="hm-metric-val" id="hmPhysicalPct">68%</div><div class="hm-metric-lbl">Physical</div></div>
+    </div>
+    <div class="hm-metric-card">
+      <div class="hm-metric-icon blue"><i class="fa fa-video"></i></div>
+      <div><div class="hm-metric-val" id="hmVirtualPct">32%</div><div class="hm-metric-lbl">Virtual</div></div>
+    </div>
+    <div class="hm-metric-card">
+      <div class="hm-metric-icon yellow"><i class="fa fa-clock"></i></div>
+      <div><div class="hm-metric-val" id="hmLateRate">14%</div><div class="hm-metric-lbl">Late Rate</div></div>
+    </div>
+    <div class="hm-metric-card">
+      <div class="hm-metric-icon orange"><i class="fa fa-person-walking-arrow-right"></i></div>
+      <div><div class="hm-metric-val" id="hmEarlyDept">8%</div><div class="hm-metric-lbl">Early Departures</div></div>
+    </div>
+    <div class="hm-metric-card">
+      <div class="hm-metric-icon red"><i class="fa fa-shield-halved"></i></div>
+      <div><div class="hm-metric-val" id="hmFraudFlags">3</div><div class="hm-metric-lbl">Fraud Flags</div></div>
+    </div>
+    <div class="hm-metric-card">
+      <div class="hm-metric-icon purple"><i class="fa fa-chart-line"></i></div>
+      <div><div class="hm-metric-val" id="hmTrend">+4%</div><div class="hm-metric-lbl">Attendance Trend</div></div>
+    </div>
+  </div>
+
+  <!-- Trends Table -->
+  <div class="table-wrap mt-16">
+    <table class="cd-table cd-table-sm">
+      <thead>
+        <tr>
+          <th>Metric</th>
+          <th>Physical</th>
+          <th>Virtual</th>
+          <th>Combined</th>
+          <th>Trend</th>
+        </tr>
+      </thead>
+      <tbody id="hmTrendsBody">
+        <tr>
+          <td>Attendance Rate</td>
+          <td><span class="green-text">91.2%</span></td>
+          <td><span class="blue-text">87.5%</span></td>
+          <td><span class="green-text">89.8%</span></td>
+          <td><span class="green-text"><i class="fa fa-arrow-trend-up"></i> +3.2%</span></td>
+        </tr>
+        <tr>
+          <td>Late Arrival Rate</td>
+          <td><span class="yellow-text">12.4%</span></td>
+          <td><span class="yellow-text">17.1%</span></td>
+          <td><span class="yellow-text">14.3%</span></td>
+          <td><span class="red-text"><i class="fa fa-arrow-trend-up"></i> +1.8%</span></td>
+        </tr>
+        <tr>
+          <td>Stipend Eligible</td>
+          <td><span class="green-text">5 / 8</span></td>
+          <td><span class="blue-text">4 / 6</span></td>
+          <td><span class="green-text">9 / 14</span></td>
+          <td><span class="gray-text">—</span></td>
+        </tr>
+        <tr>
+          <td>Fraud Flags</td>
+          <td><span class="green-text">0</span></td>
+          <td><span class="orange-text">3</span></td>
+          <td><span class="orange-text">3</span></td>
+          <td><span class="orange-text"><i class="fa fa-triangle-exclamation"></i> Review</span></td>
+        </tr>
+        <tr>
+          <td>Avg Session Duration</td>
+          <td><span>7h 52m</span></td>
+          <td><span>6h 38m</span></td>
+          <td><span>7h 22m</span></td>
+          <td><span class="red-text"><i class="fa fa-arrow-trend-down"></i> -14m</span></td>
+        </tr>
+      </tbody>
+    </table>
+  </div>
+
+  <div class="hm-insight-row" id="hmInsightRow">
+    <div class="hm-insight">
+      <i class="fa fa-lightbulb" style="color:var(--yellow)"></i>
+      <span>Virtual participants show a <strong>17% higher late rate</strong> — consider adjusting join reminders.</span>
+    </div>
+    <div class="hm-insight">
+      <i class="fa fa-shield-halved" style="color:var(--orange)"></i>
+      <span><strong>3 fraud flags</strong> detected in virtual sessions — review before finalizing stipend decisions.</span>
     </div>
   </div>
 </div>
@@ -1910,6 +2419,344 @@ CD-Students</textarea>
   </div>
 </div>`
   return shell('Geofence Config', body, 'admin')
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// HYBRID INTELLIGENCE PLATFORM PAGE
+// ═══════════════════════════════════════════════════════════════════
+function hybridPage(): string {
+  const body = `
+<div class="page-header">
+  <div>
+    <h2><i class="fa fa-layer-group"></i> Hybrid Attendance Platform</h2>
+    <p class="page-sub">Manage physical, virtual, and hybrid attendance sessions intelligently</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn-primary" onclick="openNewSession()">
+      <i class="fa fa-plus"></i> New Session
+    </button>
+  </div>
+</div>
+
+<!-- ── Attendance Mode Controller ─────────────────────────────── -->
+<div class="hybrid-mode-controller">
+  <div class="amc-title"><i class="fa fa-sliders"></i> Attendance Mode Controller</div>
+  <div class="amc-modes">
+    <button class="amc-mode active" id="mode-physical" onclick="setMode('physical',this)">
+      <div class="amc-mode-icon"><i class="fa fa-location-dot"></i></div>
+      <strong>Physical</strong>
+      <small>GPS Geofence Verification</small>
+    </button>
+    <button class="amc-mode" id="mode-virtual" onclick="setMode('virtual',this)">
+      <div class="amc-mode-icon"><i class="fa fa-video"></i></div>
+      <strong>Virtual</strong>
+      <small>Meeting Platform Verification</small>
+    </button>
+    <button class="amc-mode" id="mode-hybrid" onclick="setMode('hybrid',this)">
+      <div class="amc-mode-icon hybrid-gradient"><i class="fa fa-layer-group"></i></div>
+      <strong>Hybrid</strong>
+      <small>GPS + Virtual Combined</small>
+    </button>
+  </div>
+  <div class="amc-status" id="amcStatus">
+    <i class="fa fa-circle-check" style="color:var(--green)"></i>
+    <span>Physical mode active — geofence verification enabled</span>
+  </div>
+</div>
+
+<!-- ── Live Session Stats Bar ─────────────────────────────────── -->
+<div class="hybrid-stats-bar" id="hybridStatsBar">
+  <div class="hsb-item">
+    <div class="hsb-icon green"><i class="fa fa-location-dot"></i></div>
+    <div><span class="hsb-num" id="hsbPhysical">5</span><small>Physical</small></div>
+  </div>
+  <div class="hsb-item">
+    <div class="hsb-icon blue"><i class="fa fa-video"></i></div>
+    <div><span class="hsb-num" id="hsbVirtual">3</span><small>Virtual</small></div>
+  </div>
+  <div class="hsb-item">
+    <div class="hsb-icon green"><i class="fa fa-circle-check"></i></div>
+    <div><span class="hsb-num" id="hsbPresent">8</span><small>Present</small></div>
+  </div>
+  <div class="hsb-item">
+    <div class="hsb-icon yellow"><i class="fa fa-clock"></i></div>
+    <div><span class="hsb-num" id="hsbLate">2</span><small>Late</small></div>
+  </div>
+  <div class="hsb-item">
+    <div class="hsb-icon red"><i class="fa fa-circle-xmark"></i></div>
+    <div><span class="hsb-num" id="hsbAbsent">1</span><small>Absent</small></div>
+  </div>
+  <div class="hsb-item">
+    <div class="hsb-icon orange"><i class="fa fa-triangle-exclamation"></i></div>
+    <div><span class="hsb-num" id="hsbFlagged">1</span><small>Flagged</small></div>
+  </div>
+  <div class="hsb-checkpoint" id="hsbCheckpoint">
+    <i class="fa fa-flag-checkered"></i>
+    <span>Checkpoint in <strong id="hsbCheckpointTime">—</strong></span>
+  </div>
+</div>
+
+<!-- ── Main Grid ──────────────────────────────────────────────── -->
+<div class="hybrid-main-grid">
+
+  <!-- LEFT: Virtual Presence Panel -->
+  <div class="card hybrid-panel">
+    <div class="card-header">
+      <h3><i class="fa fa-video"></i> VirtualPresenceService</h3>
+      <span class="badge badge-ai">Live</span>
+    </div>
+
+    <!-- Platform selector -->
+    <div class="vps-platforms">
+      <button class="vps-plat active" id="plat-gmeet" onclick="selectPlatform('google_meet',this)">
+        <i class="fa fa-video"></i> Google Meet
+      </button>
+      <button class="vps-plat" id="plat-zoom" onclick="selectPlatform('zoom',this)" disabled>
+        <i class="fa fa-video"></i> Zoom <span class="soon-tag">Soon</span>
+      </button>
+      <button class="vps-plat" id="plat-teams" onclick="selectPlatform('teams',this)" disabled>
+        <i class="fa fa-tv"></i> Teams <span class="soon-tag">Soon</span>
+      </button>
+    </div>
+
+    <!-- Google Meet configuration -->
+    <div class="vps-config" id="vpsMeetConfig">
+      <div class="form-group">
+        <label><i class="fa fa-link"></i> Meeting Link or ID</label>
+        <input type="text" class="form-control" id="meetLink" placeholder="https://meet.google.com/abc-defg-hij"/>
+      </div>
+      <div class="form-group">
+        <label><i class="fa fa-clock"></i> Min Presence Duration (minutes)</label>
+        <input type="number" class="form-control" id="minDuration" value="15" min="5" max="60"/>
+      </div>
+      <button class="btn-primary btn-full" onclick="runVirtualVerification()">
+        <i class="fa fa-satellite-dish"></i> Fetch &amp; Verify Participants
+      </button>
+      <div class="vps-google-note">
+        <i class="fa fa-circle-info"></i>
+        Production: connects to Google Admin SDK Reports API.
+        <a href="https://developers.google.com/admin-sdk/reports/v1/guides/meet" target="_blank">API Docs</a>
+      </div>
+    </div>
+
+    <!-- Results -->
+    <div id="vpsResults" style="display:none">
+      <div class="vps-result-header">
+        <strong id="vpsResultTitle">Verification Complete</strong>
+        <span class="badge badge-present" id="vpsResultBadge"></span>
+      </div>
+      <div class="table-wrap">
+        <table class="cd-table cd-table-sm" id="vpsTable">
+          <thead><tr><th>Student</th><th>Join</th><th>Duration</th><th>Status</th></tr></thead>
+          <tbody id="vpsTableBody"></tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- RIGHT: AI Intelligence Engine -->
+  <div class="card hybrid-panel">
+    <div class="card-header">
+      <h3><i class="fa fa-brain"></i> AttendanceIntelligenceEngine</h3>
+      <span class="badge badge-ai">AI</span>
+    </div>
+
+    <div class="aie-idle" id="aieIdle">
+      <i class="fa fa-brain fa-2x" style="color:var(--purple);opacity:.6"></i>
+      <p>Run virtual verification first, then click Analyze to get an AI attendance proposal.</p>
+      <button class="btn-primary" onclick="runAIAnalysis()">
+        <i class="fa fa-wand-magic-sparkles"></i> Analyze Attendance
+      </button>
+    </div>
+
+    <div id="aieProcessing" style="display:none">
+      <div class="sb-processing">
+        <div class="sb-process-ring"></div>
+        <div class="sb-process-text">
+          <strong>AI analyzing attendance data…</strong>
+          <p id="aieProcessStep">Loading datasets</p>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI Proposal -->
+    <div id="aieProposal" style="display:none">
+      <div class="aie-proposal-banner" id="aieProposalBanner"></div>
+      <div class="aie-summary-box" id="aieSummaryBox"></div>
+      <div id="aieAnomalies" class="aie-anomalies"></div>
+      <div class="aie-actions">
+        <button class="btn-primary" onclick="confirmAttendance()">
+          <i class="fa fa-circle-check"></i> Confirm Attendance
+        </button>
+        <button class="btn-secondary" onclick="modifyAttendance()">
+          <i class="fa fa-pen"></i> Modify Records
+        </button>
+        <button class="btn-secondary" onclick="rerunVerification()">
+          <i class="fa fa-rotate"></i> Re-run Verification
+        </button>
+      </div>
+    </div>
+  </div>
+</div>
+
+<!-- ── Fraud Detection Panel ──────────────────────────────────── -->
+<div class="card mt-24" id="fraudPanel">
+  <div class="card-header">
+    <h3><i class="fa fa-shield-halved"></i> FraudDetectionService</h3>
+    <div class="header-actions">
+      <span class="badge" id="fraudBadge" style="display:none"></span>
+      <button class="btn-secondary btn-sm" onclick="runFraudScan()">
+        <i class="fa fa-magnifying-glass"></i> Scan Session
+      </button>
+    </div>
+  </div>
+  <div id="fraudIdle" class="fraud-idle">
+    <i class="fa fa-shield-halved"></i>
+    <p>Click "Scan Session" to run automated fraud detection on current attendance data.</p>
+    <div class="fraud-detect-list">
+      <span><i class="fa fa-check"></i> Short virtual sessions</span>
+      <span><i class="fa fa-check"></i> Unmatched accounts</span>
+      <span><i class="fa fa-check"></i> Repeat late patterns</span>
+      <span><i class="fa fa-check"></i> Location spoofing signals</span>
+    </div>
+  </div>
+  <div id="fraudResults" style="display:none">
+    <div class="fraud-stats-row" id="fraudStatsRow"></div>
+    <div class="table-wrap mt-12">
+      <table class="cd-table cd-table-sm">
+        <thead><tr><th>Student</th><th>Flag Type</th><th>Description</th><th>Severity</th><th>Action</th></tr></thead>
+        <tbody id="fraudTableBody"></tbody>
+      </table>
+    </div>
+    <p class="fraud-disclaimer"><i class="fa fa-circle-info"></i> Flags are for instructor review only — no automatic penalties are applied.</p>
+  </div>
+</div>
+
+<!-- ── Merged Attendance Table ────────────────────────────────── -->
+<div class="card mt-24">
+  <div class="card-header">
+    <h3><i class="fa fa-table-list"></i> Merged Attendance Record</h3>
+    <div class="header-actions">
+      <span class="badge badge-ai" id="mergeSourceBadge" style="display:none"></span>
+      <button class="btn-secondary btn-sm" onclick="runMerge()"><i class="fa fa-code-merge"></i> Merge Datasets</button>
+    </div>
+  </div>
+  <div class="table-wrap">
+    <table class="cd-table" id="mergedTable">
+      <thead><tr><th>Student</th><th>Mode</th><th>Status</th><th>Source</th><th>Verified</th></tr></thead>
+      <tbody id="mergedTableBody">
+        <tr><td colspan="5" class="text-center" style="color:var(--gray400);padding:24px">
+          Run verification then click "Merge Datasets" to generate unified attendance record
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Smart Attendance AI Assistant ──────────────────────────── -->
+<div class="card mt-24" id="smartAssistantPanel">
+  <div class="card-header">
+    <h3><i class="fa fa-wand-magic-sparkles"></i> Smart Attendance AI Assistant</h3>
+    <div class="header-actions">
+      <span class="badge badge-ai" id="saaBadge" style="display:none"></span>
+      <button class="btn-secondary btn-sm" onclick="toggleSmartAssistant()">
+        <i class="fa fa-chevron-down" id="saaToggleIcon"></i>
+      </button>
+    </div>
+  </div>
+
+  <div id="saaBody">
+    <!-- Input row -->
+    <div class="saa-input-row">
+      <input type="text" class="form-control" id="saaQuery"
+        placeholder="Ask anything… e.g. 'Who is at risk of losing stipend?' or 'Summarize today's session'"
+        onkeydown="if(event.key==='Enter')runSmartAssistant()"/>
+      <button class="btn-primary" onclick="runSmartAssistant()">
+        <i class="fa fa-paper-plane"></i> Ask AI
+      </button>
+    </div>
+
+    <!-- Quick-action chips -->
+    <div class="saa-chips">
+      <button class="saa-chip" onclick="saaQuick('Summarize today\'s attendance')">
+        <i class="fa fa-clipboard-list"></i> Session Summary
+      </button>
+      <button class="saa-chip" onclick="saaQuick('Which students are missing entries or have no clock-in today?')">
+        <i class="fa fa-user-xmark"></i> Missing Entries
+      </button>
+      <button class="saa-chip" onclick="saaQuick('List all anomalies and flagged records with suggested corrections')">
+        <i class="fa fa-triangle-exclamation"></i> Suggest Corrections
+      </button>
+      <button class="saa-chip" onclick="saaQuick('Who is at risk of losing their stipend based on current attendance?')">
+        <i class="fa fa-circle-exclamation"></i> Stipend Risk
+      </button>
+      <button class="saa-chip" onclick="saaQuick('Compare virtual vs physical attendance participation rates')">
+        <i class="fa fa-chart-bar"></i> Mode Comparison
+      </button>
+    </div>
+
+    <!-- Conversation thread -->
+    <div class="saa-thread" id="saaThread">
+      <div class="saa-msg saa-msg-system">
+        <div class="saa-avatar"><i class="fa fa-brain"></i></div>
+        <div class="saa-bubble">
+          <p>Hello! I'm your Smart Attendance AI Assistant. I can analyze attendance data, detect missing entries, suggest corrections, and generate summaries. All recommendations require your approval before any records are modified.</p>
+          <small class="saa-time">Ready</small>
+        </div>
+      </div>
+    </div>
+
+    <!-- AI disclaimer -->
+    <p class="saa-disclaimer">
+      <i class="fa fa-circle-info"></i>
+      Recommendations only — no records are modified without explicit instructor approval.
+    </p>
+  </div>
+</div>
+
+<!-- ── New Session Modal ──────────────────────────────────────── -->
+<div class="modal-overlay" id="newSessionModal" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h3><i class="fa fa-plus"></i> Create New Session</h3>
+      <button class="modal-close" onclick="closeModal('newSessionModal')"><i class="fa fa-xmark"></i></button>
+    </div>
+    <div style="padding:0 24px 8px">
+      <div class="form-group">
+        <label>Session Name / Class ID</label>
+        <input type="text" class="form-control" id="nsClassId" placeholder="e.g. CD-2024-Web-Dev"/>
+      </div>
+      <div class="form-group">
+        <label>Attendance Mode</label>
+        <select class="form-control" id="nsMode">
+          <option value="physical">Physical (GPS Geofence)</option>
+          <option value="virtual">Virtual (Meeting Platform)</option>
+          <option value="hybrid" selected>Hybrid (GPS + Virtual)</option>
+        </select>
+      </div>
+      <div class="form-group">
+        <label>Virtual Meeting Link (optional)</label>
+        <input type="text" class="form-control" id="nsVirtualLink" placeholder="https://meet.google.com/..."/>
+      </div>
+      <div class="geo-coord-row">
+        <div class="form-group">
+          <label>Duration (minutes)</label>
+          <input type="number" class="form-control" id="nsDuration" value="480"/>
+        </div>
+        <div class="form-group">
+          <label>Checkpoint (minutes)</label>
+          <input type="number" class="form-control" id="nsCheckpoint" value="20"/>
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal('newSessionModal')">Cancel</button>
+      <button class="btn-primary" onclick="createSession()"><i class="fa fa-play"></i> Start Session</button>
+    </div>
+  </div>
+</div>
+`
+  return shell('Hybrid Platform', body, 'instructor')
 }
 
 export default app

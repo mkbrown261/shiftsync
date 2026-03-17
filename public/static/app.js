@@ -1712,3 +1712,554 @@ function toggleAIKeyVis() {
   inp.type = show ? 'text' : 'password';
   if (ico) ico.className = show ? 'fa fa-eye-slash' : 'fa fa-eye';
 }
+
+/* ══════════════════════════════════════════════════════════════════
+   HYBRID INTELLIGENCE PLATFORM
+   Attendance Mode Controller · VirtualPresenceService
+   AttendanceIntelligenceEngine · FraudDetectionService
+   ══════════════════════════════════════════════════════════════════ */
+
+// ── State ─────────────────────────────────────────────────────────
+let hybridMode        = 'physical';
+let currentSessionId  = null;
+let currentPlatform   = 'google_meet';
+let virtualRecords    = [];
+let physicalRecords   = [
+  { name:'Alex Johnson',    type:'physical', status:'present', time:'09:02', verified:true  },
+  { name:'Maria Garcia',    type:'physical', status:'late',    time:'09:14', verified:true  },
+  { name:'DeShawn Williams',type:'physical', status:'present', time:'09:01', verified:true  },
+  { name:'Priya Patel',     type:'physical', status:'absent',  time:null,    verified:false },
+  { name:'Marcus Thompson', type:'physical', status:'present', time:'09:00', verified:true  },
+];
+
+// ── Countdown timer for checkpoint ───────────────────────────────
+let checkpointTimer   = null;
+let checkpointSeconds = 0;
+
+function startCheckpointTimer(minutes) {
+  checkpointSeconds = minutes * 60;
+  const el = document.getElementById('hsbCheckpointTime');
+  if (checkpointTimer) clearInterval(checkpointTimer);
+  checkpointTimer = setInterval(() => {
+    checkpointSeconds--;
+    if (el) {
+      if (checkpointSeconds <= 0) {
+        el.textContent = 'NOW';
+        el.style.color = 'var(--orange)';
+        clearInterval(checkpointTimer);
+        showToast('⏰ Attendance checkpoint reached — run verification!', 'orange');
+      } else {
+        const m = Math.floor(checkpointSeconds/60), s = checkpointSeconds%60;
+        el.textContent = `${m}m ${s.toString().padStart(2,'0')}s`;
+      }
+    }
+  }, 1000);
+}
+
+// ── Attendance Mode Controller ────────────────────────────────────
+function setMode(mode, btn) {
+  hybridMode = mode;
+  document.querySelectorAll('.amc-mode').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+  const statusEl = document.getElementById('amcStatus');
+  const msgs = {
+    physical: '<i class="fa fa-circle-check" style="color:var(--green)"></i> Physical mode — geofence GPS verification active',
+    virtual:  '<i class="fa fa-circle-check" style="color:var(--blue)"></i> Virtual mode — meeting platform verification active',
+    hybrid:   '<i class="fa fa-circle-check" style="color:var(--purple)"></i> Hybrid mode — GPS + virtual verification combined'
+  };
+  if (statusEl) statusEl.innerHTML = msgs[mode] || msgs.physical;
+  showToast(`Mode set to ${mode}`, 'purple');
+}
+
+// ── Platform selector ─────────────────────────────────────────────
+function selectPlatform(platform, btn) {
+  currentPlatform = platform;
+  document.querySelectorAll('.vps-plat').forEach(b => b.classList.remove('active'));
+  if (btn) btn.classList.add('active');
+}
+
+// ── New Session ───────────────────────────────────────────────────
+function openNewSession() {
+  document.getElementById('newSessionModal').style.display = 'flex';
+}
+
+async function createSession() {
+  const classId    = document.getElementById('nsClassId')?.value?.trim() || 'CD-2024-Session';
+  const mode       = document.getElementById('nsMode')?.value || 'hybrid';
+  const link       = document.getElementById('nsVirtualLink')?.value?.trim() || '';
+  const duration   = parseInt(document.getElementById('nsDuration')?.value) || 480;
+  const checkpoint = parseInt(document.getElementById('nsCheckpoint')?.value) || 20;
+
+  try {
+    const res = await fetch('/api/hybrid/session/create', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ class_id:classId, session_type:mode, start_time:new Date().toISOString(),
+        instructor_id:'instructor@codedifferently.org', duration_minutes:duration,
+        virtual_link:link||null, checkpoint_minutes:checkpoint })
+    });
+    const data = await res.json();
+    if (data.success) {
+      currentSessionId = data.session.id;
+      closeModal('newSessionModal');
+      // Set mode controller
+      setMode(mode, document.getElementById(`mode-${mode}`));
+      // Start checkpoint countdown
+      startCheckpointTimer(checkpoint);
+      showToast(`✓ Session ${data.session.id} started — ${mode} mode`, 'green');
+    }
+  } catch(e) {
+    showToast('Session created (demo mode)', 'green');
+    currentSessionId = 'SES-DEMO-' + Date.now();
+    closeModal('newSessionModal');
+    startCheckpointTimer(20);
+  }
+}
+
+// ── VirtualPresenceService ────────────────────────────────────────
+async function runVirtualVerification() {
+  const minDur = parseInt(document.getElementById('minDuration')?.value) || 15;
+  showToast('Fetching virtual participants…', 'blue');
+
+  try {
+    const res = await fetch('/api/hybrid/virtual/verify', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: currentSessionId || 'SES-DEMO', platform: currentPlatform, min_duration_minutes: minDur })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+    virtualRecords = data.records;
+
+    // Render results table
+    const tbody = document.getElementById('vpsTableBody');
+    const resultsDiv = document.getElementById('vpsResults');
+    const titleEl = document.getElementById('vpsResultTitle');
+    const badgeEl = document.getElementById('vpsResultBadge');
+
+    if (tbody) {
+      tbody.innerHTML = data.records.map(r => {
+        const sc = { present:'badge-present', late:'badge-present', flagged:'badge-late', insufficient_duration:'badge-late', unmatched:'badge-absent' };
+        const label = { present:'Present', late:'Late', flagged:'Flagged', insufficient_duration:'Short', unmatched:'Unmatched' };
+        return `<tr>
+          <td>${r.name}</td>
+          <td><span class="time-chip">${r.join_time}</span></td>
+          <td>${r.duration_minutes}m</td>
+          <td><span class="badge ${sc[r.status]||'badge-ready'}">${label[r.status]||r.status}</span></td>
+        </tr>`;
+      }).join('');
+    }
+    if (resultsDiv) resultsDiv.style.display = 'block';
+    if (titleEl)    titleEl.textContent = `${data.summary.present_count} present, ${data.summary.flagged_count} flagged`;
+    if (badgeEl)    { badgeEl.textContent = `${data.records.length} participants`; badgeEl.className = 'badge badge-present'; }
+
+    // Update stats bar
+    const vNum = document.getElementById('hsbVirtual');
+    if (vNum) vNum.textContent = data.summary.present_count;
+
+    showToast(`✓ ${data.summary.present_count} verified, ${data.summary.flagged_count} flagged`, 'green');
+  } catch(e) {
+    showToast('Verification error: ' + e.message, 'orange');
+  }
+}
+
+// ── AttendanceIntelligenceEngine ──────────────────────────────────
+async function runAIAnalysis() {
+  document.getElementById('aieIdle').style.display = 'none';
+  document.getElementById('aieProcessing').style.display = 'block';
+  document.getElementById('aieProposal').style.display = 'none';
+
+  const steps = ['Loading datasets…','Merging physical + virtual records…','Detecting anomalies…','Generating proposal…'];
+  for (let i = 0; i < steps.length; i++) {
+    const el = document.getElementById('aieProcessStep');
+    if (el) el.textContent = steps[i];
+    await new Promise(r => setTimeout(r, 550));
+  }
+
+  try {
+    const apiKey = getAIKey(), baseUrl = getAIBase();
+    const res = await fetch('/api/hybrid/ai/analyze', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        session_id: currentSessionId || 'SES-DEMO',
+        session_type: hybridMode,
+        physical_records: physicalRecords,
+        virtual_records: virtualRecords.length ? virtualRecords : null,
+        apiKey: apiKey || undefined,
+        baseUrl: baseUrl || undefined
+      })
+    });
+    const data = await res.json();
+    if (!data.success) throw new Error(data.error);
+
+    document.getElementById('aieProcessing').style.display = 'none';
+    document.getElementById('aieProposal').style.display = 'block';
+
+    const banner = document.getElementById('aieProposalBanner');
+    const summary = document.getElementById('aieSummaryBox');
+    const anomalies = document.getElementById('aieAnomalies');
+    const p = data.proposal;
+
+    if (banner) {
+      banner.innerHTML = `
+        <div class="aie-banner-text">
+          <i class="fa fa-brain aie-brain"></i>
+          <div>
+            <strong>${data.analysis.summary}</strong>
+            <small>Confidence: ${Math.round((data.analysis.confidence||0.9)*100)}% ${data.ai_enhanced?'· AI-enhanced':''}</small>
+          </div>
+        </div>
+        <div class="aie-banner-counts">
+          <span class="aie-count green"><i class="fa fa-circle-check"></i>${p.present} Present</span>
+          <span class="aie-count yellow"><i class="fa fa-clock"></i>${p.late} Late</span>
+          <span class="aie-count red"><i class="fa fa-circle-xmark"></i>${p.absent} Absent</span>
+          ${p.flagged?`<span class="aie-count orange"><i class="fa fa-flag"></i>${p.flagged} Flagged</span>`:''}
+        </div>`;
+    }
+
+    if (summary) {
+      summary.innerHTML = `
+        <div class="aie-meta-grid">
+          <div class="aie-meta-item"><span>${p.physical_count}</span><small>Physical</small></div>
+          <div class="aie-meta-item"><span>${p.virtual_count}</span><small>Virtual</small></div>
+          <div class="aie-meta-item"><span>${p.total_students}</span><small>Total</small></div>
+          <div class="aie-meta-item ${p.ready_to_confirm?'green-item':'orange-item'}">
+            <span><i class="fa fa-${p.ready_to_confirm?'circle-check':'triangle-exclamation'}"></i></span>
+            <small>${p.ready_to_confirm?'Ready':'Review First'}</small>
+          </div>
+        </div>
+        <div class="aie-recommendation">
+          <i class="fa fa-lightbulb"></i> ${data.analysis.recommendation}
+        </div>`;
+    }
+
+    if (anomalies && data.analysis.anomalies?.length) {
+      anomalies.innerHTML = `<div class="aie-anomalies-title"><i class="fa fa-triangle-exclamation"></i> Anomalies Detected</div>` +
+        data.analysis.anomalies.map(a => `
+          <div class="aie-anomaly-row aie-sev-${a.severity}">
+            <i class="fa fa-${a.severity==='error'?'circle-xmark':a.severity==='warning'?'triangle-exclamation':'circle-info'}"></i>
+            <div><strong>${a.student}</strong> — ${a.issue}</div>
+            <span class="aie-sev-tag">${a.severity}</span>
+          </div>`).join('');
+    } else if (anomalies) {
+      anomalies.innerHTML = '<div style="color:var(--green);font-size:.85rem;padding:8px 0"><i class="fa fa-circle-check"></i> No anomalies detected</div>';
+    }
+
+    showToast('✓ AI analysis complete', 'purple');
+  } catch(e) {
+    document.getElementById('aieProcessing').style.display = 'none';
+    document.getElementById('aieIdle').style.display = 'flex';
+    showToast('AI analysis failed — try again', 'orange');
+  }
+}
+
+async function confirmAttendance() {
+  try {
+    const res = await fetch('/api/hybrid/ai/confirm', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: currentSessionId||'SES-DEMO', action:'confirm' })
+    });
+    const data = await res.json();
+    showToast('✓ ' + data.message, 'green');
+    // Mark proposal as confirmed
+    const actions = document.querySelector('.aie-actions');
+    if (actions) actions.innerHTML = `<div class="aie-confirmed"><i class="fa fa-circle-check"></i> Attendance confirmed &amp; saved — ${new Date().toLocaleTimeString()}</div>`;
+  } catch(e) { showToast('Attendance confirmed (demo)', 'green'); }
+}
+
+function modifyAttendance() { showToast('Edit the merged table below to modify records, then confirm again', 'blue'); }
+function rerunVerification() {
+  document.getElementById('aieProposal').style.display = 'none';
+  document.getElementById('aieIdle').style.display = 'flex';
+  showToast('Ready to re-run — click Analyze when ready', 'purple');
+}
+
+// ── FraudDetectionService ─────────────────────────────────────────
+async function runFraudScan() {
+  showToast('Scanning for suspicious patterns…', 'purple');
+  document.getElementById('fraudIdle').style.display = 'none';
+
+  try {
+    const res = await fetch('/api/hybrid/fraud/analyze', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({ session_id: currentSessionId||'SES-DEMO' })
+    });
+    const data = await res.json();
+    document.getElementById('fraudResults').style.display = 'block';
+
+    const badge = document.getElementById('fraudBadge');
+    const totalFlags = data.total_flags;
+    if (badge) {
+      badge.style.display = 'inline-flex';
+      badge.textContent = `${totalFlags} flag${totalFlags!==1?'s':''}`;
+      badge.className = totalFlags > 0 ? 'badge badge-late' : 'badge badge-present';
+    }
+
+    const statsRow = document.getElementById('fraudStatsRow');
+    if (statsRow) {
+      const s = data.flags_by_severity;
+      statsRow.innerHTML = `
+        <div class="fraud-stat red"><i class="fa fa-circle-xmark"></i><span>${s.error}</span><small>Error</small></div>
+        <div class="fraud-stat yellow"><i class="fa fa-triangle-exclamation"></i><span>${s.warning}</span><small>Warning</small></div>
+        <div class="fraud-stat blue"><i class="fa fa-circle-info"></i><span>${s.info}</span><small>Info</small></div>
+        <div class="fraud-stat green"><i class="fa fa-shield-halved"></i><span>${totalFlags}</span><small>Total Flags</small></div>`;
+    }
+
+    const tbody = document.getElementById('fraudTableBody');
+    if (tbody) {
+      tbody.innerHTML = data.flags.map(f => {
+        const sc = { error:'badge-absent', warning:'badge-late', info:'badge-ready' };
+        return `<tr>
+          <td><div class="student-cell"><div class="avatar sm">${f.student.split(' ').map(n=>n[0]).join('')}</div>${f.student}</div></td>
+          <td><code style="font-size:.78rem">${f.flag_type}</code></td>
+          <td style="color:var(--gray400);font-size:.82rem">${f.flag_description}</td>
+          <td><span class="badge ${sc[f.severity]||'badge-ready'}">${f.severity}</span></td>
+          <td><button class="btn-icon btn-note" onclick="dismissFlag('${f.id}',this)" title="Dismiss"><i class="fa fa-check"></i></button></td>
+        </tr>`;
+      }).join('');
+    }
+
+    showToast(`✓ Scan complete — ${totalFlags} flag${totalFlags!==1?'s':''} found`, totalFlags>0?'orange':'green');
+  } catch(e) { showToast('Fraud scan error: '+e.message,'orange'); }
+}
+
+function dismissFlag(id, btn) {
+  const row = btn?.closest('tr');
+  if (row) { row.style.opacity = '.3'; row.style.pointerEvents = 'none'; }
+  showToast(`Flag ${id} dismissed`, 'green');
+}
+
+// ── Hybrid Merge ──────────────────────────────────────────────────
+async function runMerge() {
+  showToast('Merging physical + virtual datasets…', 'purple');
+  try {
+    const res = await fetch('/api/hybrid/merge', {
+      method:'POST', headers:{'Content-Type':'application/json'},
+      body: JSON.stringify({
+        session_id: currentSessionId||'SES-DEMO',
+        physical: physicalRecords,
+        virtual: virtualRecords.length ? virtualRecords.map(r=>({ name:r.name, type:'virtual', status:r.status==='insufficient_duration'?'flagged':r.status, join:r.join_time, duration:r.duration_minutes, verified:r.matched_student&&r.sufficient_duration })) : [
+          { name:'Liam Chen',     type:'virtual', status:'present', join:'08:58', duration:65, verified:true },
+          { name:'Aaliyah Brown', type:'virtual', status:'late',    join:'09:22', duration:45, verified:true },
+          { name:'Sofia Rodriguez',type:'virtual',status:'flagged', join:'09:02', duration:8,  verified:false },
+        ]
+      })
+    });
+    const data = await res.json();
+
+    const tbody = document.getElementById('mergedTableBody');
+    const badge = document.getElementById('mergeSourceBadge');
+
+    if (tbody) {
+      tbody.innerHTML = data.merged_records.map(r => {
+        const sc = { present:'badge-present', late:'badge-present', absent:'badge-absent', flagged:'badge-late' };
+        const src = r.attendance_source;
+        const srcBadge = src==='physical'?'<span style="color:var(--green);font-size:.75rem"><i class="fa fa-location-dot"></i> Physical</span>':
+                         src==='virtual'?'<span style="color:var(--blue);font-size:.75rem"><i class="fa fa-video"></i> Virtual</span>':
+                         '<span style="color:var(--purple);font-size:.75rem"><i class="fa fa-code-merge"></i> Override</span>';
+        const mode = r.type === 'physical' ? '<i class="fa fa-location-dot" style="color:var(--green)"></i>' : '<i class="fa fa-video" style="color:var(--blue)"></i>';
+        return `<tr>
+          <td><div class="student-cell"><div class="avatar sm">${r.name.split(' ').map(n=>n[0]).join('')}</div>${r.name}</div></td>
+          <td>${mode} ${r.type}</td>
+          <td><span class="badge ${sc[r.status]||'badge-ready'}">${r.status}</span></td>
+          <td>${srcBadge}</td>
+          <td>${r.verified?'<i class="fa fa-circle-check" style="color:var(--green)"></i>':'<i class="fa fa-circle-xmark" style="color:var(--gray400)"></i>'}</td>
+        </tr>`;
+      }).join('');
+    }
+
+    if (badge) {
+      badge.style.display = 'inline-flex';
+      const s = data.summary;
+      badge.textContent = `${s.physical_only} physical · ${s.virtual_only} virtual · ${s.virtual_override} override`;
+    }
+
+    showToast(`✓ Merged ${data.merged_records.length} records — ${data.summary.present} present`, 'green');
+  } catch(e) { showToast('Merge error: '+e.message,'orange'); }
+}
+
+// Auto-init hybrid page
+if (document.getElementById('hybridStatsBar')) {
+  // Set default checkpoint display
+  const cpEl = document.getElementById('hsbCheckpointTime');
+  if (cpEl) cpEl.textContent = 'Not started';
+}
+
+/* ── SMART ATTENDANCE AI ASSISTANT ──────────────────────────────── */
+let saaCollapsed = false;
+
+function toggleSmartAssistant() {
+  const body = document.getElementById('saaBody');
+  const icon = document.getElementById('saaToggleIcon');
+  if (!body) return;
+  saaCollapsed = !saaCollapsed;
+  body.style.display = saaCollapsed ? 'none' : 'block';
+  if (icon) icon.className = saaCollapsed ? 'fa fa-chevron-up' : 'fa fa-chevron-down';
+}
+
+function saaQuick(query) {
+  const inp = document.getElementById('saaQuery');
+  if (inp) { inp.value = query; }
+  runSmartAssistant();
+}
+
+async function runSmartAssistant() {
+  const inp = document.getElementById('saaQuery');
+  const query = inp?.value?.trim();
+  if (!query) { showToast('Type a question first', 'orange'); return; }
+  if (inp) inp.value = '';
+
+  const thread = document.getElementById('saaThread');
+  if (!thread) return;
+
+  // Append user message
+  thread.innerHTML += `
+    <div class="saa-msg saa-msg-user">
+      <div class="saa-bubble saa-bubble-user">
+        <p>${query.replace(/</g,'&lt;')}</p>
+        <small class="saa-time">${new Date().toLocaleTimeString()}</small>
+      </div>
+      <div class="saa-avatar saa-avatar-user"><i class="fa fa-user"></i></div>
+    </div>`;
+  thread.scrollTop = thread.scrollHeight;
+
+  // Typing indicator
+  const typingId = 'saa-typing-' + Date.now();
+  thread.innerHTML += `
+    <div class="saa-msg saa-msg-system" id="${typingId}">
+      <div class="saa-avatar"><i class="fa fa-brain"></i></div>
+      <div class="saa-bubble"><span class="saa-typing"><span></span><span></span><span></span></span></div>
+    </div>`;
+  thread.scrollTop = thread.scrollHeight;
+
+  // Build context from current session data
+  const context = {
+    session_type: typeof hybridMode !== 'undefined' ? hybridMode : 'hybrid',
+    physical_records: typeof physicalRecords !== 'undefined' ? physicalRecords : [],
+    virtual_records: typeof virtualRecords !== 'undefined' ? virtualRecords : [],
+    query
+  };
+
+  let reply = '';
+
+  try {
+    const apiKey = getAIKey(), baseUrl = getAIBase();
+    if (apiKey) {
+      // AI-powered response
+      const url = ((baseUrl || 'https://www.genspark.ai/api/llm_proxy/v1')).replace(/\/$/, '') + '/chat/completions';
+      const systemPrompt = `You are a Smart Attendance AI Assistant for Code Differently education program.
+You analyze attendance data and provide helpful, concise insights. You can:
+- Summarize session attendance
+- Detect missing entries
+- Identify anomalies and suggest corrections
+- Calculate stipend risk
+- Compare virtual vs physical participation
+IMPORTANT: Always note that your responses are recommendations only — no records are modified without instructor approval.
+Respond in 2-4 sentences max. Be specific and actionable.`;
+
+      const controller = new AbortController();
+      const timeout = setTimeout(() => controller.abort(), 3000);
+
+      const res = await fetch(url, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json', 'Authorization': `Bearer ${apiKey}` },
+        body: JSON.stringify({
+          model: 'gpt-4o-mini',
+          messages: [
+            { role: 'system', content: systemPrompt },
+            { role: 'user', content: `Attendance data: ${JSON.stringify(context)}\n\nQuestion: ${query}` }
+          ],
+          temperature: 0.3, max_tokens: 300
+        }),
+        signal: controller.signal
+      });
+      clearTimeout(timeout);
+
+      if (res.ok) {
+        const d = await res.json();
+        reply = d.choices?.[0]?.message?.content || '';
+      }
+    }
+  } catch { /* fall through to local analysis */ }
+
+  // Local intelligent fallback
+  if (!reply) {
+    const phys = typeof physicalRecords !== 'undefined' ? physicalRecords : [];
+    const virt = typeof virtualRecords !== 'undefined' ? virtualRecords : [];
+    const ql = query.toLowerCase();
+
+    if (ql.includes('summar') || ql.includes('today')) {
+      const present = [...phys,...virt].filter(r=>r.status==='present').length;
+      const late    = [...phys,...virt].filter(r=>r.status==='late').length;
+      const absent  = phys.filter(r=>r.status==='absent').length;
+      const flagged = virt.filter(r=>r.status==='flagged'||r.status==='insufficient_duration').length;
+      reply = `Session summary: <strong>${present} present</strong>, ${late} late, ${absent} absent, ${flagged} flagged for review. Overall attendance rate is approximately ${Math.round(present/(present+absent+late||1)*100)}%. ${flagged > 0 ? 'Review flagged records before confirming.' : 'Data looks clean — ready to confirm.'}`;
+    } else if (ql.includes('missing') || ql.includes('no clock')) {
+      const missing = phys.filter(r => r.status === 'absent' || !r.verified);
+      reply = missing.length
+        ? `Missing entries detected: <strong>${missing.map(r=>r.name).join(', ')}</strong> have no verified clock-in. Recommend contacting these students or marking as excused if appropriate.`
+        : `No missing entries detected — all enrolled students have a clock-in record for this session.`;
+    } else if (ql.includes('stipend') || ql.includes('risk')) {
+      const atRisk = phys.filter(r => r.status === 'late' || r.status === 'absent');
+      reply = atRisk.length
+        ? `At-risk students: <strong>${atRisk.map(r=>r.name).join(', ')}</strong> — accumulating lates/absences may affect stipend eligibility if the trend continues. Recommend a check-in conversation.`
+        : `No students currently flagged for stipend risk based on this session's data. Continue monitoring weekly.`;
+    } else if (ql.includes('virtual') || ql.includes('physical') || ql.includes('compar')) {
+      reply = `Physical attendance: <strong>${phys.filter(r=>r.status!=='absent').length}/${phys.length} present</strong>. Virtual attendance: <strong>${virt.filter(r=>r.status==='present'||r.status==='late').length}/${virt.length} present</strong>. Virtual sessions show a slightly higher late rate — consider sending earlier join reminders.`;
+    } else if (ql.includes('anomal') || ql.includes('correct') || ql.includes('suggest')) {
+      const issues = [
+        ...phys.filter(r=>r.status==='absent').map(r=>`${r.name} has no physical clock-in`),
+        ...virt.filter(r=>r.flag).map(r=>`${r.name}: ${r.flag}`),
+      ];
+      reply = issues.length
+        ? `Suggested corrections: ${issues.map(i=>`<em>${i}</em>`).join('; ')}. Review each before finalizing attendance records.`
+        : `No anomalies detected in the current dataset. All records appear consistent — you may confirm attendance.`;
+    } else {
+      reply = `I analyzed the current session (${hybridMode || 'hybrid'} mode) with ${phys.length} physical and ${virt.length} virtual records. For detailed insights, try asking about session summary, missing entries, stipend risk, or a virtual vs physical comparison.`;
+    }
+  }
+
+  // Remove typing indicator and append AI reply
+  const typingEl = document.getElementById(typingId);
+  if (typingEl) typingEl.remove();
+
+  thread.innerHTML += `
+    <div class="saa-msg saa-msg-system">
+      <div class="saa-avatar"><i class="fa fa-brain"></i></div>
+      <div class="saa-bubble">
+        <p>${reply}</p>
+        <small class="saa-time">${new Date().toLocaleTimeString()} · AI Recommendation</small>
+      </div>
+    </div>`;
+  thread.scrollTop = thread.scrollHeight;
+
+  // Update badge
+  const badge = document.getElementById('saaBadge');
+  if (badge) {
+    badge.style.display = 'inline-flex';
+    badge.textContent = 'Active';
+    badge.className = 'badge badge-present';
+  }
+}
+
+/* ── REPORT INTELLIGENCE — HYBRID METRICS ──────────────────────── */
+function loadHybridMetrics() {
+  showToast('Refreshing hybrid intelligence metrics…', 'purple');
+  // Simulate live metric refresh with slight variation
+  setTimeout(() => {
+    const physPct = (62 + Math.floor(Math.random()*12)).toString() + '%';
+    const virtPct = (100 - parseInt(physPct)) + '%';
+    const lateRate = (10 + Math.floor(Math.random()*10)).toString() + '%';
+    const earlyDep = (5  + Math.floor(Math.random()*8)).toString() + '%';
+    const fraud    = Math.floor(Math.random()*5).toString();
+    const trend    = (Math.random() > 0.5 ? '+' : '-') + (Math.random()*5).toFixed(1) + '%';
+
+    const set = (id, val) => { const el = document.getElementById(id); if(el) el.textContent = val; };
+    set('hmPhysicalPct', physPct);
+    set('hmVirtualPct', virtPct);
+    set('hmLateRate', lateRate);
+    set('hmEarlyDept', earlyDep);
+    set('hmFraudFlags', fraud);
+    set('hmTrend', trend);
+
+    showToast('✓ Hybrid metrics refreshed', 'green');
+  }, 900);
+}
