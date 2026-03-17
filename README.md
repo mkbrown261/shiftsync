@@ -1,4 +1,4 @@
-# ShiftSync — Code Differently Time & Attendance
+# ShiftSync
 
 > Replacing Connecteam ($1,000/month) with a custom, intelligent, location-verified attendance system.
 
