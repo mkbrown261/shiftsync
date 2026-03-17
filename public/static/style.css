@@ -2056,3 +2056,161 @@ body {
 }
 .hm-insight i { margin-top:1px; flex-shrink:0; }
 .gray-text { color:var(--gray400); }
+
+/* ═══ AUTH SYSTEM — LOGIN VALIDATION, GUARDS ══════════════════════ */
+
+/* Error banner (inserted above form — no layout change to login page) */
+.auth-error-banner {
+  background: rgba(239,68,68,.10);
+  border: 1px solid rgba(239,68,68,.30);
+  border-radius: 10px;
+  padding: 10px 14px;
+  margin-bottom: 14px;
+  display: none;
+}
+.auth-err-row {
+  display: flex; align-items: flex-start; gap: 8px;
+  font-size: .84rem; color: var(--red); line-height: 1.45;
+  padding: 2px 0;
+}
+.auth-err-row i { margin-top: 2px; flex-shrink: 0; }
+
+/* Red border on invalid inputs */
+.input-error {
+  border-color: var(--red) !important;
+  box-shadow: 0 0 0 2px rgba(239,68,68,.18) !important;
+}
+
+/* ═══ ADMIN USER MANAGEMENT PAGE ══════════════════════════════════ */
+.um-stats-row {
+  display: flex; gap: 14px; flex-wrap: wrap; margin-bottom: 20px;
+}
+.um-stat-card {
+  flex: 1; min-width: 120px;
+  display: flex; align-items: center; gap: 14px;
+  padding: 16px 18px; border-radius: 12px;
+  background: var(--surface); border: 1px solid var(--border);
+}
+.um-stat-icon {
+  width: 42px; height: 42px; border-radius: 10px;
+  display: flex; align-items: center; justify-content: center;
+  font-size: 1.1rem; flex-shrink: 0;
+}
+.um-stat-icon.purple { background: rgba(155,61,232,.12); color: var(--purple); }
+.um-stat-icon.green  { background: rgba(34,197,94,.12);  color: var(--green); }
+.um-stat-icon.yellow { background: rgba(245,158,11,.12); color: var(--yellow); }
+.um-stat-icon.blue   { background: rgba(59,130,246,.12); color: var(--blue); }
+.um-stat-num { font-size: 1.6rem; font-weight: 800; line-height: 1; }
+.um-stat-lbl { font-size: .74rem; color: var(--gray400); margin-top: 2px; }
+
+/* Filter bar */
+.um-filter-bar {
+  display: flex; gap: 10px; flex-wrap: wrap; align-items: center;
+  padding-bottom: 4px;
+}
+.um-search-wrap {
+  display: flex; align-items: center; gap: 8px;
+  flex: 1; min-width: 220px;
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 8px; padding: 8px 12px;
+}
+.um-search-wrap i { color: var(--gray400); flex-shrink: 0; }
+.um-search { background: transparent; border: none; outline: none; color: var(--text); flex: 1; font-size: .88rem; }
+.um-filter-sel { width: auto; padding: 7px 10px; font-size: .83rem; }
+
+/* Add student modal — form grid */
+.um-form-grid {
+  display: grid; grid-template-columns: 1fr 1fr; gap: 14px;
+  padding: 16px 24px 0;
+}
+@media (max-width:640px) { .um-form-grid { grid-template-columns: 1fr; } }
+.modal-body-scroll { max-height: 70vh; overflow-y: auto; }
+
+/* Required asterisk */
+.required { color: var(--red); margin-left: 2px; }
+
+/* Credentials section in add-student modal */
+.um-credentials-section {
+  margin: 16px 24px 0;
+  padding: 16px; border-radius: 12px;
+  background: rgba(155,61,232,.05);
+  border: 1px solid rgba(155,61,232,.15);
+}
+.um-cred-header {
+  display: flex; align-items: center; gap: 8px;
+  font-weight: 700; margin-bottom: 12px; font-size: .9rem;
+}
+.toggle-row {
+  display: flex; align-items: center; gap: 10px;
+  cursor: pointer; font-size: .86rem; color: var(--text);
+}
+.toggle-row input[type=checkbox] { display: none; }
+.toggle-switch {
+  width: 36px; height: 20px; border-radius: 20px;
+  background: var(--border); position: relative; transition: background .2s; flex-shrink: 0;
+}
+.toggle-row input:checked + .toggle-switch { background: var(--purple); }
+.toggle-switch::after {
+  content: ''; position: absolute; top: 2px; left: 2px;
+  width: 16px; height: 16px; border-radius: 50%; background: #fff;
+  transition: transform .2s;
+}
+.toggle-row input:checked + .toggle-switch::after { transform: translateX(16px); }
+.um-auto-preview {
+  display: flex; align-items: center; gap: 8px;
+  padding: 10px 12px; border-radius: 8px;
+  background: rgba(34,197,94,.07); border: 1px solid rgba(34,197,94,.15);
+  font-size: .83rem; color: var(--gray400); margin-top: 10px;
+}
+.um-pw-hint {
+  font-size: .76rem; color: var(--gray400); margin-top: 4px;
+  display: flex; align-items: center; gap: 6px;
+}
+
+/* Success banner in credentials modal */
+.um-success-banner {
+  display: flex; align-items: center; gap: 14px;
+  padding: 14px 16px; border-radius: 10px;
+  background: rgba(34,197,94,.08); border: 1px solid rgba(34,197,94,.2);
+  margin-bottom: 16px;
+}
+.um-success-banner div strong { display: block; font-size: 1rem; }
+.um-success-banner div p { margin: 2px 0 0; font-size: .82rem; color: var(--gray400); }
+
+/* Credentials box */
+.um-creds-box {
+  background: var(--surface2); border: 1px solid var(--border);
+  border-radius: 10px; overflow: hidden; margin-bottom: 14px;
+}
+.um-cred-row {
+  display: flex; align-items: center; gap: 12px;
+  padding: 10px 14px; border-bottom: 1px solid var(--border);
+}
+.um-cred-row:last-child { border-bottom: none; }
+.um-cred-label { width: 130px; flex-shrink: 0; font-size: .8rem; color: var(--gray400); display: flex; align-items: center; gap: 6px; }
+.um-cred-row code { flex: 1; font-size: .86rem; color: var(--text); word-break: break-all; }
+.creds-pw { color: var(--purple) !important; letter-spacing: .04em; }
+.um-onboard-note {
+  display: flex; align-items: flex-start; gap: 8px;
+  padding: 10px 12px; border-radius: 8px;
+  background: rgba(245,158,11,.07); border: 1px solid rgba(245,158,11,.2);
+  font-size: .82rem; color: var(--gray400);
+}
+
+/* ═══ STUDENT ONBOARDING — FIRST LOGIN ════════════════════════════ */
+.um-pw-requirements {
+  display: flex; flex-direction: column; gap: 6px; margin-top: 12px;
+}
+.pw-req {
+  display: flex; align-items: center; gap: 8px;
+  font-size: .82rem; color: var(--gray400); transition: color .2s;
+}
+.pw-req i { width: 14px; text-align: center; }
+.pw-req-ok { color: var(--green); }
+.pw-req-ok i::before { content: '\f00c'; } /* fa-check */
+
+/* Larger modal variant */
+.modal-lg { max-width: 680px; width: 95vw; }
+
+/* mt-20 utility */
+.mt-20 { margin-top: 20px; }

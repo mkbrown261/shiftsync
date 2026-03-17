@@ -25,6 +25,7 @@ function switchRole(role, btn) {
   currentRole = role;
   document.querySelectorAll('.role-tab').forEach(b => b.classList.remove('active'));
   btn.classList.add('active');
+  clearLoginErrors();
 }
 
 /* ── LOGIN ──────────────────────────────────────── */
@@ -38,9 +39,13 @@ function demoLogin(role) {
   document.querySelectorAll('.role-tab').forEach((b, i) => {
     b.classList.toggle('active', ['student','instructor','admin'][i] === role);
   });
+  // Demo logins always bypass manual validation
+  clearLoginErrors();
+  if (el) el.classList.remove('input-error');
+  if (pl) pl.classList.remove('input-error');
 }
 
-/* ── LOGIN STATE MANAGER (Bug Fix 1) ────────────────
+/* ── LOGIN STATE MANAGER ─────────────────────────────
    Resets spinner + re-enables button on every page visit.
    Uses sessionStorage flag to detect "back navigation".
    If already authenticated (role stored), redirect to dashboard.
@@ -58,8 +63,66 @@ function resetLoginUI() {
   } catch(e) { /* fail-safe: do nothing, keep page usable */ }
 }
 
+/* ── LOGIN VALIDATION HELPERS ──────────────────────── */
+function clearLoginErrors() {
+  const errBox = document.getElementById('loginErrors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
+  document.getElementById('emailInput')?.classList.remove('input-error');
+  document.getElementById('pwInput')?.classList.remove('input-error');
+}
+
+function showLoginErrors(errors) {
+  // Create error box if it doesn't exist (non-destructive — no layout change)
+  let errBox = document.getElementById('loginErrors');
+  if (!errBox) {
+    errBox = document.createElement('div');
+    errBox.id = 'loginErrors';
+    errBox.className = 'auth-error-banner';
+    const form = document.getElementById('loginForm');
+    if (form) form.parentNode.insertBefore(errBox, form);
+  }
+  errBox.innerHTML = errors.map(e => `<div class="auth-err-row"><i class="fa fa-circle-exclamation"></i>${e}</div>`).join('');
+  errBox.style.display = 'block';
+}
+
+function validateLoginInputs(email, password) {
+  const errors = [];
+  const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+  if (!email || !email.trim())          errors.push('Please enter a valid email address.');
+  else if (!emailRe.test(email.trim())) errors.push('Please enter a valid email address.');
+  if (!password || !password.trim())    errors.push('Password is required.');
+  return errors;
+}
+
+// Detect if this is a demo login (pre-filled by demoLogin())
+function isDemoLogin(email) {
+  const demoEmails = ['alex@codedifferently.org','instructor@codedifferently.org','cristina@codedifferently.org'];
+  return demoEmails.includes((email || '').toLowerCase().trim());
+}
+
 function handleLogin(e) {
   e.preventDefault();
+  clearLoginErrors();
+
+  const emailEl = document.getElementById('emailInput');
+  const pwEl    = document.getElementById('pwInput');
+  const email   = emailEl?.value || '';
+  const password = pwEl?.value || '';
+
+  // Demo accounts bypass strict validation (they use pre-set known values)
+  const isDemo = isDemoLogin(email);
+
+  if (!isDemo) {
+    // Strict validation for manually-entered credentials
+    const errors = validateLoginInputs(email, password);
+    if (errors.length) {
+      showLoginErrors(errors);
+      if (errors.some(e => e.includes('email')))    emailEl?.classList.add('input-error');
+      if (errors.some(e => e.includes('Password'))) pwEl?.classList.add('input-error');
+      return; // Block form submission
+    }
+  }
+
   // Guard: prevent double-submit
   if (sessionStorage.getItem('cd_auth_pending') === '1') return;
   sessionStorage.setItem('cd_auth_pending', '1');
@@ -74,12 +137,13 @@ function handleLogin(e) {
   setTimeout(() => {
     try {
       const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
-      // Store role so redirect-back detection works
+      // Store role + session timestamp
       sessionStorage.setItem('cd_role', currentRole);
+      sessionStorage.setItem('cd_session_start', Date.now().toString());
+      sessionStorage.setItem('cd_user_email', email);
       sessionStorage.removeItem('cd_auth_pending');
       window.location.href = dest[currentRole] || '/student';
     } catch(e) {
-      // Fail-safe: reset UI so user can try again
       resetLoginUI();
     }
   }, 800);
@@ -87,17 +151,20 @@ function handleLogin(e) {
 
 // ── Auto-reset on every login page load / back-navigation ──
 if (document.getElementById('loginForm')) {
-  // Reset immediately in case spinner was frozen from previous visit
   resetLoginUI();
-  // Also fire on pageshow (catches bfcache / browser back button)
   window.addEventListener('pageshow', (ev) => {
-    if (document.getElementById('loginForm')) resetLoginUI();
+    if (document.getElementById('loginForm')) {
+      resetLoginUI();
+      clearLoginErrors();
+    }
   });
+  // Clear validation errors on input
+  document.getElementById('emailInput')?.addEventListener('input', clearLoginErrors);
+  document.getElementById('pwInput')?.addEventListener('input', clearLoginErrors);
   // If user already has a stored role session, redirect to their dashboard
   const storedRole = sessionStorage.getItem('cd_role');
   if (storedRole && ['student','instructor','admin'].includes(storedRole)) {
     const dest = { student: '/student', instructor: '/instructor', admin: '/admin' };
-    // Only auto-redirect if they came back via back button (persisted entry)
     if (document.referrer && document.referrer !== window.location.href) {
       window.location.replace(dest[storedRole]);
     }
@@ -113,9 +180,453 @@ function togglePw() {
   if (ico) { ico.className = show ? 'fa fa-eye-slash' : 'fa fa-eye'; }
 }
 
+// Generic pw field toggle (for modals)
+function togglePwField(inputId, iconId) {
+  const inp = document.getElementById(inputId);
+  const ico = document.getElementById(iconId);
+  if (!inp) return;
+  const show = inp.type === 'password';
+  inp.type = show ? 'text' : 'password';
+  if (ico) ico.className = show ? 'fa fa-eye-slash' : 'fa fa-eye';
+}
+
 /* ══════════════════════════════════════════════════════
-   INTELLIGENT LOCATION-VERIFIED CLOCK IN/OUT SYSTEM
+   AUTH SYSTEM — LOGOUT, GUARD, ROLE VALIDATION, SESSION
    ══════════════════════════════════════════════════════ */
+
+// ── LOGOUT (fixes the logout failure bug) ────────────────────────
+// Clears ALL auth state from sessionStorage and localStorage,
+// then hard-navigates to /logout (which redirects to /login).
+// This ensures the page is not served from bfcache.
+async function performLogout(e) {
+  if (e) e.preventDefault();
+  try {
+    // 1. Signal server (fire-and-forget, no need to await)
+    fetch('/api/auth/logout', { method: 'POST' }).catch(() => {});
+    // 2. Clear ALL session and auth state
+    sessionStorage.removeItem('cd_role');
+    sessionStorage.removeItem('cd_session_start');
+    sessionStorage.removeItem('cd_auth_pending');
+    sessionStorage.removeItem('cd_user_email');
+    sessionStorage.removeItem('cd_first_login');
+    sessionStorage.clear();   // Belt-and-suspenders: clear everything
+    // 3. Hard navigate — bypasses bfcache, ensures login page is fresh
+    window.location.href = '/logout';
+  } catch(err) {
+    // Fail-safe: still navigate even if something above throws
+    window.location.href = '/login';
+  }
+}
+
+// ── AUTHENTICATION GUARD ─────────────────────────────────────────
+// Called on every protected dashboard page.
+// If no valid session exists, redirect to /login immediately.
+// Role mismatch → redirect to the correct dashboard.
+const AUTH_PROTECTED = ['/student', '/instructor', '/admin', '/profile', '/reports', '/settings', '/geofence', '/hybrid', '/admin/users'];
+const ROLE_ROUTES = {
+  student:    ['/student', '/profile'],
+  instructor: ['/instructor', '/hybrid', '/reports'],
+  admin:      ['/admin', '/admin/users', '/instructor', '/reports', '/settings', '/geofence', '/hybrid'],
+};
+const ROLE_HOME = { student: '/student', instructor: '/instructor', admin: '/admin' };
+
+function runAuthGuard() {
+  try {
+    const path = window.location.pathname;
+    // Only guard protected paths
+    if (!AUTH_PROTECTED.some(p => path.startsWith(p))) return;
+
+    const role = sessionStorage.getItem('cd_role');
+    // No session → go to login
+    if (!role || !['student','instructor','admin'].includes(role)) {
+      window.location.replace('/login');
+      return;
+    }
+
+    // Role-based access: if current path not allowed for this role → redirect to role home
+    const allowed = ROLE_ROUTES[role] || [];
+    const hasAccess = allowed.some(r => path.startsWith(r));
+    if (!hasAccess) {
+      showToast(`Access denied — redirecting to your dashboard`, 'orange');
+      setTimeout(() => { window.location.replace(ROLE_HOME[role] || '/login'); }, 1200);
+      return;
+    }
+  } catch(e) { /* fail-safe: do nothing, page stays visible */ }
+}
+
+// Run guard immediately on page load
+runAuthGuard();
+
+// ── SESSION MONITORING ───────────────────────────────────────────
+// Monitors for session expiry (8-hour timeout) and inactivity (60 min).
+// On expiry, redirects to login with a toast message.
+const SESSION_MAX_MS      = 8 * 60 * 60 * 1000;  // 8 hours
+const INACTIVITY_MAX_MS   = 60 * 60 * 1000;       // 60 minutes
+let   lastActivityTime    = Date.now();
+let   sessionCheckInterval = null;
+
+function updateActivity() { lastActivityTime = Date.now(); }
+['mousemove','keydown','click','scroll','touchstart'].forEach(ev =>
+  document.addEventListener(ev, updateActivity, { passive: true })
+);
+
+function startSessionMonitor() {
+  const path = window.location.pathname;
+  if (!AUTH_PROTECTED.some(p => path.startsWith(p))) return;
+
+  sessionCheckInterval = setInterval(() => {
+    try {
+      const role = sessionStorage.getItem('cd_role');
+      if (!role) { clearInterval(sessionCheckInterval); performLogout(); return; }
+
+      const sessionStart  = parseInt(sessionStorage.getItem('cd_session_start') || '0');
+      const now           = Date.now();
+      const sessionAge    = now - sessionStart;
+      const inactivityAge = now - lastActivityTime;
+
+      if (sessionAge > SESSION_MAX_MS) {
+        clearInterval(sessionCheckInterval);
+        showToast('Session expired — please sign in again', 'orange');
+        setTimeout(performLogout, 2000);
+      } else if (inactivityAge > INACTIVITY_MAX_MS) {
+        clearInterval(sessionCheckInterval);
+        showToast('Signed out due to inactivity', 'orange');
+        setTimeout(performLogout, 2000);
+      }
+    } catch(e) { /* fail-safe */ }
+  }, 60 * 1000); // Check every minute
+}
+startSessionMonitor();
+
+/* ══════════════════════════════════════════════════════
+   ADMIN USER MANAGEMENT
+   ══════════════════════════════════════════════════════ */
+
+let umAllStudents = [];
+let umSelectedStudentId = null;
+
+// Load student list from API
+async function loadStudentList() {
+  try {
+    const res  = await fetch('/api/admin/students');
+    const data = await res.json();
+    if (data.success) {
+      umAllStudents = data.students;
+      renderStudentTable(umAllStudents);
+      updateUMStats(umAllStudents);
+    }
+  } catch(e) {
+    const tbody = document.getElementById('studentTableBody');
+    if (tbody) tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:24px;color:var(--red)">
+      <i class="fa fa-triangle-exclamation"></i> Failed to load students — ${e.message}
+    </td></tr>`;
+  }
+}
+
+function updateUMStats(students) {
+  const set = (id, val) => { const el = document.getElementById(id); if (el) el.textContent = val; };
+  set('umTotalCount',   students.length);
+  set('umActiveCount',  students.filter(s => s.status === 'active').length);
+  set('umPendingCount', students.filter(s => s.firstLogin || s.status === 'pending').length);
+  const programs = new Set(students.map(s => s.program));
+  set('umProgramCount', programs.size);
+}
+
+function renderStudentTable(students) {
+  const tbody = document.getElementById('studentTableBody');
+  if (!tbody) return;
+  if (!students.length) {
+    tbody.innerHTML = `<tr><td colspan="7" style="text-align:center;padding:32px;color:var(--gray400)">
+      No students found.</td></tr>`;
+    return;
+  }
+  tbody.innerHTML = students.map(s => {
+    const statusCls = s.status === 'active' ? 'badge-present' : s.status === 'suspended' ? 'badge-absent' : 'badge-late';
+    const initials  = `${s.firstName[0]}${s.lastName[0]}`;
+    const firstLoginBadge = s.firstLogin
+      ? `<span class="badge badge-late" style="font-size:.68rem;margin-left:4px"><i class="fa fa-key"></i> First Login</span>` : '';
+    return `<tr id="umRow-${s.id}">
+      <td>
+        <div class="student-cell">
+          <div class="avatar sm">${initials}</div>
+          <div>
+            <strong>${s.firstName} ${s.lastName}</strong>
+            <div style="font-size:.76rem;color:var(--gray400)">${s.email}</div>
+          </div>
+        </div>
+        ${firstLoginBadge}
+      </td>
+      <td><code style="font-size:.78rem">${s.studentId}</code></td>
+      <td>${s.program}</td>
+      <td>Cohort ${s.cohort}</td>
+      <td style="font-size:.82rem;color:var(--gray400)">${s.enrollDate}</td>
+      <td><span class="badge ${statusCls}">${s.status.charAt(0).toUpperCase()+s.status.slice(1)}</span></td>
+      <td>
+        <div style="display:flex;gap:6px">
+          <button class="btn-icon btn-note" title="Reset password" onclick="resetStudentPassword('${s.id}','${s.firstName} ${s.lastName}')">
+            <i class="fa fa-key"></i>
+          </button>
+          <button class="btn-icon" title="${s.status === 'suspended' ? 'Activate' : 'Suspend'}"
+            style="color:var(--${s.status === 'suspended' ? 'green' : 'yellow'})"
+            onclick="toggleStudentStatus('${s.id}','${s.status}')">
+            <i class="fa fa-${s.status === 'suspended' ? 'circle-check' : 'ban'}"></i>
+          </button>
+          <button class="btn-icon" title="Remove student" style="color:var(--red)"
+            onclick="removeStudent('${s.id}','${s.firstName} ${s.lastName}')">
+            <i class="fa fa-trash"></i>
+          </button>
+        </div>
+      </td>
+    </tr>`;
+  }).join('');
+}
+
+function filterStudentList() {
+  const search  = (document.getElementById('umSearch')?.value || '').toLowerCase();
+  const program = document.getElementById('umProgramFilter')?.value || '';
+  const status  = document.getElementById('umStatusFilter')?.value || '';
+  const cohort  = document.getElementById('umCohortFilter')?.value || '';
+  const filtered = umAllStudents.filter(s => {
+    const matchSearch  = !search  || `${s.firstName} ${s.lastName} ${s.email} ${s.studentId}`.toLowerCase().includes(search);
+    const matchProgram = !program || s.program === program;
+    const matchStatus  = !status  || s.status  === status;
+    const matchCohort  = !cohort  || s.cohort  === cohort;
+    return matchSearch && matchProgram && matchStatus && matchCohort;
+  });
+  renderStudentTable(filtered);
+}
+
+function openAddStudentModal() {
+  // Reset form
+  ['asFirstName','asLastName','asEmail','asProgram','asCohort','asEnrollDate','asStudentId','asUsername','asTempPassword']
+    .forEach(id => { const el = document.getElementById(id); if(el) el.value = ''; });
+  const autoGen = document.getElementById('asAutoGen');
+  if (autoGen) { autoGen.checked = true; toggleCredMode(); }
+  const errBox = document.getElementById('addStudentErrors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
+  // Default enrollment date to today
+  const enroll = document.getElementById('asEnrollDate');
+  if (enroll) enroll.value = new Date().toISOString().slice(0,10);
+  document.getElementById('addStudentModal').style.display = 'flex';
+}
+
+function toggleCredMode() {
+  const isAuto = document.getElementById('asAutoGen')?.checked;
+  const manual = document.getElementById('asManualCreds');
+  const auto   = document.getElementById('asAutoCredPreview');
+  if (manual) manual.style.display = isAuto ? 'none' : 'block';
+  if (auto)   auto.style.display   = isAuto ? 'block' : 'none';
+}
+
+async function submitAddStudent() {
+  const errBox = document.getElementById('addStudentErrors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
+
+  const isAuto    = document.getElementById('asAutoGen')?.checked !== false;
+  const firstName = document.getElementById('asFirstName')?.value?.trim() || '';
+  const lastName  = document.getElementById('asLastName')?.value?.trim() || '';
+  const email     = document.getElementById('asEmail')?.value?.trim() || '';
+  const program   = document.getElementById('asProgram')?.value || '';
+  const cohort    = document.getElementById('asCohort')?.value || '2024';
+  const enrollDate= document.getElementById('asEnrollDate')?.value || '';
+  const studentId = document.getElementById('asStudentId')?.value?.trim() || '';
+  const username  = document.getElementById('asUsername')?.value?.trim() || '';
+  const tempPw    = document.getElementById('asTempPassword')?.value?.trim() || '';
+
+  const btn = document.getElementById('addStudentBtn');
+  if (btn) { btn.disabled = true; btn.innerHTML = '<i class="fa fa-spinner fa-spin"></i> Creating…'; }
+
+  try {
+    const res = await fetch('/api/admin/students', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ firstName, lastName, email, program, cohort, enrollDate, studentId, username,
+        tempPassword: isAuto ? undefined : tempPw, autoGenerate: isAuto })
+    });
+    const data = await res.json();
+
+    if (!data.success) {
+      if (errBox) {
+        errBox.innerHTML = (data.errors || ['Unknown error']).map(e =>
+          `<div class="auth-err-row"><i class="fa fa-circle-exclamation"></i>${e}</div>`).join('');
+        errBox.style.display = 'block';
+      }
+      if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-user-plus"></i> Create Account'; }
+      return;
+    }
+
+    // Success — show credentials modal
+    closeModal('addStudentModal');
+    const creds = data.credentials;
+    const stu   = data.student;
+    document.getElementById('credsStudentName').textContent = `${stu.firstName} ${stu.lastName}`;
+    document.getElementById('credsEmail').textContent       = stu.email;
+    document.getElementById('credsUsername').textContent    = creds.username;
+    document.getElementById('credsTempPw').textContent      = creds.tempPassword;
+    document.getElementById('credsStudentId').textContent   = stu.studentId;
+    document.getElementById('credsModal').style.display     = 'flex';
+
+    // Refresh the student list
+    umAllStudents.push(stu);
+    renderStudentTable(umAllStudents);
+    updateUMStats(umAllStudents);
+    showToast(`✓ Account created for ${stu.firstName} ${stu.lastName}`, 'green');
+  } catch(e) {
+    showToast('Error creating account: ' + e.message, 'orange');
+  } finally {
+    if (btn) { btn.disabled = false; btn.innerHTML = '<i class="fa fa-user-plus"></i> Create Account'; }
+  }
+}
+
+function copyCredentials() {
+  const name  = document.getElementById('credsStudentName')?.textContent || '';
+  const email = document.getElementById('credsEmail')?.textContent || '';
+  const uname = document.getElementById('credsUsername')?.textContent || '';
+  const pw    = document.getElementById('credsTempPw')?.textContent || '';
+  const sid   = document.getElementById('credsStudentId')?.textContent || '';
+  const text  = `ConnectDifferently — Login Credentials\nStudent: ${name}\nEmail: ${email}\nUsername: ${uname}\nTemp Password: ${pw}\nStudent ID: ${sid}\n\nNote: Must change password on first login.`;
+  navigator.clipboard?.writeText(text).then(() => showToast('✓ Credentials copied to clipboard', 'green'))
+    .catch(() => showToast('Copy failed — select manually', 'orange'));
+}
+
+async function resetStudentPassword(id, name) {
+  if (!confirm(`Reset password for ${name}?`)) return;
+  try {
+    const res  = await fetch(`/api/admin/students/${id}/reset-password`, { method: 'POST' });
+    const data = await res.json();
+    if (data.success) {
+      showToast(`✓ Password reset for ${name}: ${data.tempPassword}`, 'green');
+      // Refresh to show firstLogin badge
+      await loadStudentList();
+    }
+  } catch(e) { showToast('Reset failed: ' + e.message, 'orange'); }
+}
+
+async function toggleStudentStatus(id, currentStatus) {
+  const newStatus = currentStatus === 'suspended' ? 'active' : 'suspended';
+  try {
+    const res  = await fetch(`/api/admin/students/${id}`, {
+      method: 'PATCH', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status: newStatus })
+    });
+    const data = await res.json();
+    if (data.success) {
+      const idx = umAllStudents.findIndex(s => s.id === id);
+      if (idx !== -1) umAllStudents[idx] = data.student;
+      renderStudentTable(umAllStudents);
+      updateUMStats(umAllStudents);
+      showToast(`Student ${newStatus === 'active' ? 'activated' : 'suspended'}`, newStatus === 'active' ? 'green' : 'orange');
+    }
+  } catch(e) { showToast('Status update failed', 'orange'); }
+}
+
+async function removeStudent(id, name) {
+  if (!confirm(`Remove ${name} from the system? This cannot be undone.`)) return;
+  try {
+    const res  = await fetch(`/api/admin/students/${id}`, { method: 'DELETE' });
+    const data = await res.json();
+    if (data.success) {
+      umAllStudents = umAllStudents.filter(s => s.id !== id);
+      renderStudentTable(umAllStudents);
+      updateUMStats(umAllStudents);
+      showToast(`✓ ${name} removed`, 'green');
+    }
+  } catch(e) { showToast('Remove failed: ' + e.message, 'orange'); }
+}
+
+function exportStudentCSV() {
+  const header = 'Student ID,First Name,Last Name,Email,Username,Program,Cohort,Enrolled,Status';
+  const rows   = umAllStudents.map(s =>
+    [s.studentId, s.firstName, s.lastName, s.email, s.username, s.program, s.cohort, s.enrollDate, s.status].join(',')
+  );
+  const csv  = [header, ...rows].join('\n');
+  const blob = new Blob([csv], { type: 'text/csv' });
+  const url  = URL.createObjectURL(blob);
+  const a    = Object.assign(document.createElement('a'), { href: url, download: `CD_Students_${new Date().toISOString().slice(0,10)}.csv` });
+  a.click(); URL.revokeObjectURL(url);
+  showToast('✓ Student list exported', 'green');
+}
+
+// Auto-load on admin/users page
+if (document.getElementById('studentTable')) {
+  loadStudentList();
+}
+
+/* ══════════════════════════════════════════════════════
+   STUDENT ONBOARDING — FIRST LOGIN PASSWORD SETUP
+   ══════════════════════════════════════════════════════ */
+
+// Show onboarding modal for first-login students
+// (In production: triggered after verifying firstLogin flag from server)
+function checkFirstLoginOnboarding() {
+  const role = sessionStorage.getItem('cd_role');
+  if (role !== 'student') return;
+  // Simulate: check if this is a first login (production: check server flag)
+  const firstLogin = sessionStorage.getItem('cd_first_login');
+  if (firstLogin === 'true') {
+    document.getElementById('onboardingModal')?.style &&
+      (document.getElementById('onboardingModal').style.display = 'flex');
+    // Wire up live password requirement checks
+    document.getElementById('obNewPw')?.addEventListener('input', checkPwRequirements);
+    document.getElementById('obConfirmPw')?.addEventListener('input', checkPwRequirements);
+  }
+}
+
+function checkPwRequirements() {
+  const pw1 = document.getElementById('obNewPw')?.value || '';
+  const pw2 = document.getElementById('obConfirmPw')?.value || '';
+  const set = (id, ok) => {
+    const el = document.getElementById(id);
+    if (!el) return;
+    el.className = 'pw-req ' + (ok ? 'pw-req-ok' : '');
+    const ico = el.querySelector('i');
+    if (ico) ico.className = ok ? 'fa fa-check' : 'fa fa-xmark';
+  };
+  set('pwReqLen',   pw1.length >= 8);
+  set('pwReqUpper', /[A-Z]/.test(pw1));
+  set('pwReqNum',   /[0-9]/.test(pw1));
+  set('pwReqMatch', pw1 === pw2 && pw1.length > 0);
+}
+
+async function submitOnboarding() {
+  const pw1    = document.getElementById('obNewPw')?.value || '';
+  const pw2    = document.getElementById('obConfirmPw')?.value || '';
+  const errBox = document.getElementById('onboardingErrors');
+  if (errBox) { errBox.style.display = 'none'; errBox.innerHTML = ''; }
+
+  const errors = [];
+  if (pw1.length < 8)             errors.push('Password must be at least 8 characters.');
+  if (!/[A-Z]/.test(pw1))         errors.push('Password must contain at least one uppercase letter.');
+  if (!/[0-9]/.test(pw1))         errors.push('Password must contain at least one number.');
+  if (pw1 !== pw2)                 errors.push('Passwords do not match.');
+  if (errors.length) {
+    if (errBox) {
+      errBox.innerHTML = errors.map(e => `<div class="auth-err-row"><i class="fa fa-circle-exclamation"></i>${e}</div>`).join('');
+      errBox.style.display = 'block';
+    }
+    return;
+  }
+
+  try {
+    const res = await fetch('/api/auth/onboarding', {
+      method: 'POST', headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ newPassword: pw1, confirmPassword: pw2 })
+    });
+    const data = await res.json();
+    if (data.success) {
+      sessionStorage.removeItem('cd_first_login');
+      closeModal('onboardingModal');
+      showToast('✓ ' + data.message, 'green');
+    } else {
+      if (errBox) {
+        errBox.innerHTML = (data.errors || ['Error']).map(e =>
+          `<div class="auth-err-row"><i class="fa fa-circle-exclamation"></i>${e}</div>`).join('');
+        errBox.style.display = 'block';
+      }
+    }
+  } catch(e) {
+    showToast('Onboarding error: ' + e.message, 'orange');
+  }
+}
 
 // ── State ─────────────────────────────────────────────
 let isClockedIn   = false;

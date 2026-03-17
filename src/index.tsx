@@ -42,6 +42,193 @@ app.get('/reports', (c) => c.html(reportsPage()))
 app.get('/settings', (c) => c.html(settingsPage()))
 app.get('/geofence', (c) => c.html(geofencePage()))
 app.get('/hybrid', (c) => c.html(hybridPage()))
+app.get('/admin/users', (c) => c.html(adminUsersPage()))
+
+// ── Logout Route (Auth Fix — non-destructive new route) ──────────────
+// Clears no server-side state (stateless app) but exists as a clean
+// redirect target so JS can do a full navigation to trigger guard logic.
+app.get('/logout', (c) => {
+  // Set headers to prevent caching of this response
+  c.header('Cache-Control', 'no-store, no-cache, must-revalidate')
+  c.header('Pragma', 'no-cache')
+  return c.redirect('/login')
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// AUTH APIs  (Enhancement Layer — non-destructive)
+// Prefixed /api/auth/* — no existing routes modified
+// ═══════════════════════════════════════════════════════════════════
+
+// POST /api/auth/logout — called by JS before navigation; returns JSON ack
+app.post('/api/auth/logout', (c) => {
+  c.header('Cache-Control', 'no-store')
+  return c.json({ success: true, message: 'Session cleared', redirect: '/login' })
+})
+
+// POST /api/auth/validate — validate email/password format (no credentials stored server-side)
+app.post('/api/auth/validate', async (c) => {
+  try {
+    const body = await c.req.json() as { email?: string; password?: string }
+    const errors: string[] = []
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!body.email || !body.email.trim())           errors.push('Please enter a valid email address.')
+    else if (!emailRe.test(body.email.trim()))        errors.push('Please enter a valid email address.')
+    if (!body.password || !body.password.trim())      errors.push('Password is required.')
+    else if (body.password.length < 6)                errors.push('Password must be at least 6 characters.')
+    return c.json({ valid: errors.length === 0, errors })
+  } catch {
+    return c.json({ valid: false, errors: ['Validation error — please try again.'] }, 400)
+  }
+})
+
+// POST /api/auth/check-role — verify role matches expected dashboard
+app.post('/api/auth/check-role', async (c) => {
+  try {
+    const body = await c.req.json() as { role?: string; path?: string }
+    const roleRoutes: Record<string, string[]> = {
+      student:    ['/student', '/profile'],
+      instructor: ['/instructor', '/hybrid'],
+      admin:      ['/admin', '/admin/users', '/reports', '/settings', '/geofence', '/hybrid'],
+    }
+    const allowed = roleRoutes[body.role || ''] || []
+    const ok = !body.path || allowed.some(r => (body.path || '').startsWith(r))
+    return c.json({ allowed: ok, role: body.role, redirect: ok ? null : roleRoutes[body.role || '']?.[0] || '/login' })
+  } catch {
+    return c.json({ allowed: false, redirect: '/login' }, 400)
+  }
+})
+
+// ═══════════════════════════════════════════════════════════════════
+// ADMIN USER MANAGEMENT APIs  (Enhancement Layer — non-destructive)
+// Prefixed /api/admin/* — no existing routes modified
+// ═══════════════════════════════════════════════════════════════════
+
+// In-memory student registry (stateless edge — production would use D1)
+const STUDENT_REGISTRY: Array<{
+  id: string; firstName: string; lastName: string; email: string
+  username: string; program: string; cohort: string; enrollDate: string
+  studentId: string; status: 'active'|'pending'|'suspended'; firstLogin: boolean
+  createdAt: string; createdBy: string
+}> = [
+  { id:'STU001', firstName:'Alex',    lastName:'Johnson',   email:'alex@codedifferently.org',    username:'alex.johnson',   program:'Web Dev',    cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-001', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU002', firstName:'Maria',   lastName:'Garcia',    email:'maria@codedifferently.org',   username:'maria.garcia',   program:'Web Dev',    cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-002', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU003', firstName:'DeShawn', lastName:'Williams',  email:'deshawn@codedifferently.org', username:'deshawn.w',      program:'Data',       cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-003', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU004', firstName:'Priya',   lastName:'Patel',     email:'priya@codedifferently.org',   username:'priya.patel',    program:'Web Dev',    cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-004', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU005', firstName:'Liam',    lastName:'Chen',      email:'liam@codedifferently.org',    username:'liam.chen',      program:'Design',     cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-005', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU006', firstName:'Aaliyah', lastName:'Brown',     email:'aaliyah@codedifferently.org', username:'aaliyah.brown',  program:'Data',       cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-006', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU007', firstName:'Marcus',  lastName:'Thompson',  email:'marcus@codedifferently.org',  username:'marcus.t',       program:'Web Dev',    cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-007', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU008', firstName:'Sofia',   lastName:'Rodriguez', email:'sofia@codedifferently.org',   username:'sofia.rodriguez', program:'Design',    cohort:'2024', enrollDate:'2024-01-08', studentId:'CD-2024-008', status:'active',  firstLogin:false, createdAt:'2024-01-08T09:00:00Z', createdBy:'admin' },
+  { id:'STU009', firstName:'James',   lastName:'Park',      email:'james@codedifferently.org',   username:'james.park',     program:'Data',       cohort:'2024', enrollDate:'2024-01-15', studentId:'CD-2024-009', status:'pending', firstLogin:true,  createdAt:'2024-01-15T09:00:00Z', createdBy:'admin' },
+]
+
+// GET /api/admin/students — list all students
+app.get('/api/admin/students', (c) => {
+  return c.json({ success: true, students: STUDENT_REGISTRY, total: STUDENT_REGISTRY.length })
+})
+
+// POST /api/admin/students — create a new student account
+app.post('/api/admin/students', async (c) => {
+  try {
+    const body = await c.req.json() as {
+      firstName: string; lastName: string; email: string
+      program: string; cohort: string; enrollDate: string
+      username?: string; tempPassword?: string; autoGenerate?: boolean
+      studentId?: string
+    }
+    // Validate required fields
+    const errors: string[] = []
+    if (!body.firstName?.trim()) errors.push('First name is required.')
+    if (!body.lastName?.trim())  errors.push('Last name is required.')
+    const emailRe = /^[^\s@]+@[^\s@]+\.[^\s@]+$/
+    if (!body.email?.trim() || !emailRe.test(body.email)) errors.push('Valid email is required.')
+    if (!body.program?.trim()) errors.push('Program is required.')
+    if (!body.cohort?.trim())  errors.push('Cohort is required.')
+    if (STUDENT_REGISTRY.some(s => s.email.toLowerCase() === body.email?.toLowerCase())) {
+      errors.push('A student with this email already exists.')
+    }
+    if (errors.length) return c.json({ success: false, errors }, 422)
+
+    // Generate credentials if requested
+    const fn    = body.firstName.trim().toLowerCase()
+    const ln    = body.lastName.trim().toLowerCase()
+    const username  = body.username?.trim() || `${fn}.${ln}`
+    const tempPw    = body.autoGenerate
+      ? `CD${Math.random().toString(36).slice(2,6).toUpperCase()}${Math.floor(Math.random()*900+100)}!`
+      : (body.tempPassword || 'TempPass123!')
+    const stuId     = body.studentId?.trim() || `CD-${body.cohort}-${String(STUDENT_REGISTRY.length + 1).padStart(3,'0')}`
+    const newId     = `STU${String(STUDENT_REGISTRY.length + 1).padStart(3,'0')}`
+    const newStudent = {
+      id: newId, firstName: body.firstName.trim(), lastName: body.lastName.trim(),
+      email: body.email.trim().toLowerCase(), username, program: body.program.trim(),
+      cohort: body.cohort.trim(), enrollDate: body.enrollDate || new Date().toISOString().slice(0,10),
+      studentId: stuId, status: 'pending' as const, firstLogin: true,
+      createdAt: new Date().toISOString(), createdBy: 'admin'
+    }
+    STUDENT_REGISTRY.push(newStudent)
+    return c.json({
+      success: true, student: newStudent,
+      credentials: { username, tempPassword: tempPw, mustChangePassword: true },
+      message: `Account created for ${body.firstName} ${body.lastName}. Credentials generated.`
+    })
+  } catch (err: any) {
+    return c.json({ success: false, errors: [err.message] }, 400)
+  }
+})
+
+// PATCH /api/admin/students/:id — update student status
+app.patch('/api/admin/students/:id', async (c) => {
+  try {
+    const id   = c.req.param('id')
+    const body = await c.req.json() as { status?: string; firstLogin?: boolean }
+    const idx  = STUDENT_REGISTRY.findIndex(s => s.id === id)
+    if (idx === -1) return c.json({ success: false, error: 'Student not found' }, 404)
+    if (body.status && ['active','pending','suspended'].includes(body.status)) {
+      STUDENT_REGISTRY[idx].status = body.status as any
+    }
+    if (typeof body.firstLogin === 'boolean') STUDENT_REGISTRY[idx].firstLogin = body.firstLogin
+    return c.json({ success: true, student: STUDENT_REGISTRY[idx] })
+  } catch (err: any) {
+    return c.json({ success: false, error: err.message }, 400)
+  }
+})
+
+// DELETE /api/admin/students/:id — remove student
+app.delete('/api/admin/students/:id', async (c) => {
+  const id  = c.req.param('id')
+  const idx = STUDENT_REGISTRY.findIndex(s => s.id === id)
+  if (idx === -1) return c.json({ success: false, error: 'Student not found' }, 404)
+  const removed = STUDENT_REGISTRY.splice(idx, 1)[0]
+  return c.json({ success: true, message: `${removed.firstName} ${removed.lastName} removed.` })
+})
+
+// POST /api/admin/students/:id/reset-password — reset student password
+app.post('/api/admin/students/:id/reset-password', async (c) => {
+  const id  = c.req.param('id')
+  const idx = STUDENT_REGISTRY.findIndex(s => s.id === id)
+  if (idx === -1) return c.json({ success: false, error: 'Student not found' }, 404)
+  const newPw = `CD${Math.random().toString(36).slice(2,6).toUpperCase()}${Math.floor(Math.random()*900+100)}!`
+  STUDENT_REGISTRY[idx].firstLogin = true
+  return c.json({ success: true, tempPassword: newPw, message: 'Password reset. Student must change on next login.' })
+})
+
+// POST /api/auth/onboarding — student completes first-login onboarding
+app.post('/api/auth/onboarding', async (c) => {
+  try {
+    const body = await c.req.json() as { studentId?: string; newPassword?: string; confirmPassword?: string }
+    const errors: string[] = []
+    if (!body.newPassword || body.newPassword.length < 8) errors.push('Password must be at least 8 characters.')
+    if (!/[A-Z]/.test(body.newPassword || ''))  errors.push('Password must contain at least one uppercase letter.')
+    if (!/[0-9]/.test(body.newPassword || ''))  errors.push('Password must contain at least one number.')
+    if (body.newPassword !== body.confirmPassword) errors.push('Passwords do not match.')
+    if (errors.length) return c.json({ success: false, errors }, 422)
+    // Mark first login complete
+    const idx = STUDENT_REGISTRY.findIndex(s => s.id === body.studentId)
+    if (idx !== -1) STUDENT_REGISTRY[idx].firstLogin = false
+    return c.json({ success: true, message: 'Password updated. Welcome to ConnectDifferently!' })
+  } catch (err: any) {
+    return c.json({ success: false, errors: [err.message] }, 400)
+  }
+})
 
 // ═══════════════════════════════════════════════════════════════════
 // HYBRID INTELLIGENCE PLATFORM APIs  (Enhancement Layer — non-destructive)
@@ -900,12 +1087,13 @@ function shell(title: string, body: string, role: string = ''): string {
       <a href="/hybrid"><i class="fa fa-layer-group"></i> Hybrid</a>
       <a href="/reports"><i class="fa fa-chart-bar"></i> Reports</a>` : ''}
     ${role === 'admin' ? `<a href="/admin"><i class="fa fa-gauge"></i> Dashboard</a>
+      <a href="/admin/users"><i class="fa fa-users-gear"></i> Users</a>
       <a href="/instructor"><i class="fa fa-list-check"></i> Attendance</a>
       <a href="/hybrid"><i class="fa fa-layer-group"></i> Hybrid</a>
       <a href="/reports"><i class="fa fa-chart-bar"></i> Reports</a>
       <a href="/geofence"><i class="fa fa-map-location-dot"></i> Geofence</a>
       <a href="/settings"><i class="fa fa-gear"></i> Settings</a>` : ''}
-    <a href="/login"><i class="fa fa-right-from-bracket"></i> Logout</a>
+    <a href="#" onclick="performLogout(event)"><i class="fa fa-right-from-bracket"></i> Logout</a>
   </div>` : ''
   return `<!DOCTYPE html>
 <html lang="en">
@@ -2757,6 +2945,283 @@ function hybridPage(): string {
 </div>
 `
   return shell('Hybrid Platform', body, 'instructor')
+}
+
+// ═══════════════════════════════════════════════════════════════════
+// ADMIN USER MANAGEMENT PAGE
+// ═══════════════════════════════════════════════════════════════════
+function adminUsersPage(): string {
+  const body = `
+<div class="page-header">
+  <div>
+    <h2><i class="fa fa-users-gear"></i> Student Account Management</h2>
+    <p class="page-sub">Add students, assign programs, generate login credentials</p>
+  </div>
+  <div class="header-actions">
+    <button class="btn-secondary" onclick="exportStudentCSV()"><i class="fa fa-download"></i> Export List</button>
+    <button class="btn-primary" onclick="openAddStudentModal()"><i class="fa fa-user-plus"></i> Add Student</button>
+  </div>
+</div>
+
+<!-- Quick Stats -->
+<div class="um-stats-row">
+  <div class="um-stat-card">
+    <div class="um-stat-icon purple"><i class="fa fa-users"></i></div>
+    <div><div class="um-stat-num" id="umTotalCount">9</div><div class="um-stat-lbl">Total Students</div></div>
+  </div>
+  <div class="um-stat-card">
+    <div class="um-stat-icon green"><i class="fa fa-circle-check"></i></div>
+    <div><div class="um-stat-num" id="umActiveCount">8</div><div class="um-stat-lbl">Active</div></div>
+  </div>
+  <div class="um-stat-card">
+    <div class="um-stat-icon yellow"><i class="fa fa-clock"></i></div>
+    <div><div class="um-stat-num" id="umPendingCount">1</div><div class="um-stat-lbl">Pending First Login</div></div>
+  </div>
+  <div class="um-stat-card">
+    <div class="um-stat-icon blue"><i class="fa fa-layer-group"></i></div>
+    <div><div class="um-stat-num" id="umProgramCount">3</div><div class="um-stat-lbl">Programs</div></div>
+  </div>
+</div>
+
+<!-- Search & Filter Bar -->
+<div class="card mt-20">
+  <div class="um-filter-bar">
+    <div class="um-search-wrap">
+      <i class="fa fa-search"></i>
+      <input type="text" id="umSearch" class="um-search" placeholder="Search by name, email, or student ID…"
+        oninput="filterStudentList()"/>
+    </div>
+    <select class="form-control um-filter-sel" id="umProgramFilter" onchange="filterStudentList()">
+      <option value="">All Programs</option>
+      <option value="Web Dev">Web Dev</option>
+      <option value="Data">Data</option>
+      <option value="Design">Design</option>
+    </select>
+    <select class="form-control um-filter-sel" id="umStatusFilter" onchange="filterStudentList()">
+      <option value="">All Statuses</option>
+      <option value="active">Active</option>
+      <option value="pending">Pending</option>
+      <option value="suspended">Suspended</option>
+    </select>
+    <select class="form-control um-filter-sel" id="umCohortFilter" onchange="filterStudentList()">
+      <option value="">All Cohorts</option>
+      <option value="2024">Cohort 2024</option>
+      <option value="2023">Cohort 2023</option>
+    </select>
+  </div>
+
+  <!-- Student Table -->
+  <div class="table-wrap mt-12">
+    <table class="cd-table" id="studentTable">
+      <thead>
+        <tr>
+          <th>Student</th>
+          <th>Student ID</th>
+          <th>Program</th>
+          <th>Cohort</th>
+          <th>Enrolled</th>
+          <th>Status</th>
+          <th>Actions</th>
+        </tr>
+      </thead>
+      <tbody id="studentTableBody">
+        <tr><td colspan="7" style="text-align:center;padding:32px;color:var(--gray400)">
+          <i class="fa fa-spinner fa-spin"></i> Loading students…
+        </td></tr>
+      </tbody>
+    </table>
+  </div>
+</div>
+
+<!-- ── Add Student Modal ──────────────────────────────────────────── -->
+<div class="modal-overlay" id="addStudentModal" style="display:none">
+  <div class="modal modal-lg">
+    <div class="modal-header">
+      <h3><i class="fa fa-user-plus"></i> Add New Student</h3>
+      <button class="modal-close" onclick="closeModal('addStudentModal')"><i class="fa fa-xmark"></i></button>
+    </div>
+    <div class="modal-body-scroll">
+      <!-- Validation errors -->
+      <div id="addStudentErrors" class="auth-error-banner" style="display:none"></div>
+
+      <div class="um-form-grid">
+        <div class="form-group">
+          <label><i class="fa fa-user"></i> First Name <span class="required">*</span></label>
+          <input type="text" class="form-control" id="asFirstName" placeholder="e.g. Alex"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-user"></i> Last Name <span class="required">*</span></label>
+          <input type="text" class="form-control" id="asLastName" placeholder="e.g. Johnson"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-envelope"></i> Email Address <span class="required">*</span></label>
+          <input type="email" class="form-control" id="asEmail" placeholder="student@codedifferently.org"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-layer-group"></i> Program <span class="required">*</span></label>
+          <select class="form-control" id="asProgram">
+            <option value="">Select program…</option>
+            <option value="Web Dev">Web Development</option>
+            <option value="Data">Data Analytics</option>
+            <option value="Design">UI/UX Design</option>
+            <option value="DevOps">DevOps</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-people-group"></i> Cohort <span class="required">*</span></label>
+          <select class="form-control" id="asCohort">
+            <option value="2024">2024</option>
+            <option value="2025">2025</option>
+            <option value="2023">2023</option>
+          </select>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-calendar"></i> Enrollment Date</label>
+          <input type="date" class="form-control" id="asEnrollDate"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-id-card"></i> Student ID <small style="color:var(--gray400)">(auto if blank)</small></label>
+          <input type="text" class="form-control" id="asStudentId" placeholder="CD-2024-###"/>
+        </div>
+        <div class="form-group">
+          <label><i class="fa fa-at"></i> Username <small style="color:var(--gray400)">(auto if blank)</small></label>
+          <input type="text" class="form-control" id="asUsername" placeholder="first.last"/>
+        </div>
+      </div>
+
+      <!-- Credentials Section -->
+      <div class="um-credentials-section">
+        <div class="um-cred-header">
+          <i class="fa fa-key"></i>
+          <strong>Login Credentials</strong>
+        </div>
+        <div class="um-cred-toggle">
+          <label class="toggle-row">
+            <input type="checkbox" id="asAutoGen" checked onchange="toggleCredMode()"/>
+            <span class="toggle-switch"></span>
+            <span>Auto-generate secure credentials</span>
+          </label>
+        </div>
+        <div id="asManualCreds" style="display:none">
+          <div class="form-group">
+            <label><i class="fa fa-lock"></i> Temporary Password</label>
+            <div class="pw-wrap">
+              <input type="password" class="form-control" id="asTempPassword" placeholder="Min 8 chars, 1 uppercase, 1 number"/>
+              <button type="button" class="pw-toggle" onclick="togglePwField('asTempPassword','asEyeIcon')">
+                <i class="fa fa-eye" id="asEyeIcon"></i>
+              </button>
+            </div>
+            <p class="um-pw-hint"><i class="fa fa-circle-info"></i> Must be ≥8 chars with uppercase and number. Student must reset on first login.</p>
+          </div>
+        </div>
+        <div id="asAutoCredPreview" class="um-auto-preview">
+          <i class="fa fa-wand-magic-sparkles"></i>
+          A secure temporary password will be generated automatically.
+          The student must set a new password on first login.
+        </div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="closeModal('addStudentModal')">Cancel</button>
+      <button class="btn-primary" id="addStudentBtn" onclick="submitAddStudent()">
+        <i class="fa fa-user-plus"></i> Create Account
+      </button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Credentials Display Modal ─────────────────────────────────── -->
+<div class="modal-overlay" id="credsModal" style="display:none">
+  <div class="modal">
+    <div class="modal-header">
+      <h3><i class="fa fa-circle-check" style="color:var(--green)"></i> Account Created Successfully</h3>
+      <button class="modal-close" onclick="closeModal('credsModal')"><i class="fa fa-xmark"></i></button>
+    </div>
+    <div style="padding:20px 24px">
+      <div class="um-success-banner">
+        <i class="fa fa-user-check fa-2x" style="color:var(--green)"></i>
+        <div>
+          <strong id="credsStudentName">Student</strong>
+          <p>Account created and ready. Share credentials securely.</p>
+        </div>
+      </div>
+      <div class="um-creds-box">
+        <div class="um-cred-row">
+          <span class="um-cred-label"><i class="fa fa-envelope"></i> Email</span>
+          <code id="credsEmail">—</code>
+        </div>
+        <div class="um-cred-row">
+          <span class="um-cred-label"><i class="fa fa-at"></i> Username</span>
+          <code id="credsUsername">—</code>
+        </div>
+        <div class="um-cred-row">
+          <span class="um-cred-label"><i class="fa fa-key"></i> Temp Password</span>
+          <code id="credsTempPw" class="creds-pw">—</code>
+          <button class="btn-icon btn-note" onclick="copyCredentials()" title="Copy all">
+            <i class="fa fa-copy"></i>
+          </button>
+        </div>
+        <div class="um-cred-row">
+          <span class="um-cred-label"><i class="fa fa-id-badge"></i> Student ID</span>
+          <code id="credsStudentId">—</code>
+        </div>
+      </div>
+      <div class="um-onboard-note">
+        <i class="fa fa-triangle-exclamation" style="color:var(--yellow)"></i>
+        Student must set a new password on first login. Share these credentials privately.
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-secondary" onclick="copyCredentials()"><i class="fa fa-copy"></i> Copy Credentials</button>
+      <button class="btn-primary" onclick="closeModal('credsModal')">Done</button>
+    </div>
+  </div>
+</div>
+
+<!-- ── Student Onboarding Prompt (First-Login) ───────────────────── -->
+<div class="modal-overlay" id="onboardingModal" style="display:none">
+  <div class="modal">
+    <div class="modal-header" style="border-bottom:2px solid var(--purple)">
+      <h3><i class="fa fa-shield-halved" style="color:var(--purple)"></i> Welcome — Set Your Password</h3>
+    </div>
+    <div style="padding:20px 24px">
+      <p style="color:var(--gray400);font-size:.88rem;margin-bottom:18px">
+        This is your first login. You must create a new secure password to continue.
+      </p>
+      <div id="onboardingErrors" class="auth-error-banner" style="display:none"></div>
+      <div class="form-group">
+        <label><i class="fa fa-lock"></i> New Password <span class="required">*</span></label>
+        <div class="pw-wrap">
+          <input type="password" class="form-control" id="obNewPw" placeholder="Min 8 chars, 1 uppercase, 1 number"/>
+          <button type="button" class="pw-toggle" onclick="togglePwField('obNewPw','obEyeIcon1')">
+            <i class="fa fa-eye" id="obEyeIcon1"></i>
+          </button>
+        </div>
+      </div>
+      <div class="form-group">
+        <label><i class="fa fa-lock-open"></i> Confirm New Password <span class="required">*</span></label>
+        <div class="pw-wrap">
+          <input type="password" class="form-control" id="obConfirmPw" placeholder="Re-enter your new password"/>
+          <button type="button" class="pw-toggle" onclick="togglePwField('obConfirmPw','obEyeIcon2')">
+            <i class="fa fa-eye" id="obEyeIcon2"></i>
+          </button>
+        </div>
+      </div>
+      <div class="um-pw-requirements">
+        <div class="pw-req" id="pwReqLen"><i class="fa fa-xmark"></i> At least 8 characters</div>
+        <div class="pw-req" id="pwReqUpper"><i class="fa fa-xmark"></i> At least 1 uppercase letter</div>
+        <div class="pw-req" id="pwReqNum"><i class="fa fa-xmark"></i> At least 1 number</div>
+        <div class="pw-req" id="pwReqMatch"><i class="fa fa-xmark"></i> Passwords match</div>
+      </div>
+    </div>
+    <div class="modal-footer">
+      <button class="btn-primary btn-full" onclick="submitOnboarding()">
+        <i class="fa fa-lock"></i> Set Password &amp; Continue
+      </button>
+    </div>
+  </div>
+</div>`
+  return shell('Student Management', body, 'admin')
 }
 
 export default app
